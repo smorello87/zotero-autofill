@@ -1,0 +1,10 @@
+pref-title = Metadata Assistant Settings
+pref-api-key-label = OpenRouter API Key
+pref-api-key-description = Required for AI-powered bibliography parsing
+pref-auto-enrich-label =
+    .label = Auto-enrich new items on import
+pref-llm-model-label = LLM Model for parsing
+pref-enrich-preisbn-label =
+    .label = Search OCLC/LCCN for pre-1970 books
+pref-api-delay-label = Delay between API calls (ms)
+pref-help = { $name } v{ $version }

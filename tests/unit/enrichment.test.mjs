@@ -118,6 +118,37 @@ test("academic article matching tolerates Crossref online and print year differe
   });
   assert.equal(proposal.DOI, "10.1234/online-first");
 });
+
+test("academic article matching handles abbreviated titles and unaccented author names", async () => {
+  globalThis.Zotero.HTTP = {
+    request: async () => ({
+      response: {
+        message: {
+          items: [
+            {
+              DOI: "10.1215/01642472-2152855",
+              title: [
+                "Gimme Gimme This... Gimme Gimme That: Annihilation and Innovation in the Punk Rock Commons",
+              ],
+              author: [{ given: "José Esteban", family: "Muñoz" }],
+              "published-print": { "date-parts": [[2013]] },
+            },
+          ],
+        },
+      },
+    }),
+  };
+  const proposal = await mod.lookupItem({
+    itemType: "journalArticle",
+    getField: (field) =>
+      ({
+        title: "Gimme gimme this Gimme gimme that",
+        date: "2013",
+      })[field] || "",
+    getCreators: () => [{ creatorTypeID: 1, lastName: "Munoz", fieldMode: 1 }],
+  });
+  assert.equal(proposal.DOI, "10.1215/01642472-2152855");
+});
 test("existing ISBN anchors lookup without title search", async () => {
   const urls = [];
   globalThis.Zotero.HTTP = {

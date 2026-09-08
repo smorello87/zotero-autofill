@@ -639,7 +639,8 @@ export async function searchCrossref(
 
 function normalize(value: string): string {
   return value
-    .normalize("NFKC")
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
     .toLocaleLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
@@ -652,9 +653,13 @@ export async function selectBestCandidate(
   candidates: APICandidate[],
   options: { allowArticleYearMismatch?: boolean } = {},
 ): Promise<EnrichmentResult | null> {
+  const normalizedTitle = normalize(title);
   const identityMatches = candidates.filter(
     (c) =>
-      normalize(c.title || "") === normalize(title) &&
+      (normalize(c.title || "") === normalizedTitle ||
+        (options.allowArticleYearMismatch &&
+          (normalize(c.title || "").includes(normalizedTitle) ||
+            normalizedTitle.includes(normalize(c.title || ""))))) &&
       (!author ||
         ` ${normalize(c.author || "")} `.includes(` ${normalize(author)} `)),
   );

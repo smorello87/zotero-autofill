@@ -154,6 +154,98 @@ test("DOI article lookup expands shortened Crossref titles", async () => {
   assert.ok(urls.some((url) => url.includes("semanticscholar.org")));
 });
 
+test("DOI article lookup retries Semantic Scholar rate limits", async () => {
+  let semanticAttempts = 0;
+  globalThis.Zotero.HTTP = {
+    request: async (method, url) => {
+      if (url.includes("semanticscholar.org")) {
+        semanticAttempts += 1;
+        if (semanticAttempts === 1)
+          throw new Error("HTTP GET failed with status code 429");
+        return {
+          response: {
+            title:
+              "Gimme Gimme This... Gimme Gimme That: Annihilation and Innovation in the Punk Rock Commons",
+          },
+        };
+      }
+      return {
+        response: {
+          message: {
+            DOI: "10.1215/01642472-2152855",
+            title: ["Gimme Gimme This... Gimme Gimme That"],
+            author: [{ given: "José Esteban", family: "Muñoz" }],
+            "published-print": { "date-parts": [[2013]] },
+          },
+        },
+      };
+    },
+  };
+  const proposal = await mod.lookupItem({
+    itemType: "journalArticle",
+    getField: (field) =>
+      ({
+        DOI: "10.1215/01642472-2152855",
+        title: "Gimme gimme this Gimme gimme that",
+      })[field] || "",
+    getCreators: () => [],
+  });
+  assert.equal(semanticAttempts, 2);
+  assert.match(proposal.title, /Annihilation and Innovation/);
+});
+
+test("DOI article lookup uses exact-DOI Semantic Scholar search fallback", async () => {
+  let directAttempts = 0;
+  globalThis.Zotero.HTTP = {
+    request: async (method, url) => {
+      if (url.includes("api.crossref.org"))
+        return {
+          response: {
+            message: {
+              DOI: "10.1215/01642472-2152855",
+              title: ["Gimme Gimme This... Gimme Gimme That"],
+              author: [{ given: "José Esteban", family: "Muñoz" }],
+            },
+          },
+        };
+      if (
+        url.includes("semanticscholar.org") &&
+        !url.includes("/paper/search")
+      ) {
+        directAttempts += 1;
+        throw new Error("HTTP GET failed with status code 429");
+      }
+      assert.match(url, /paper\/search/);
+      return {
+        response: {
+          data: [
+            {
+              title:
+                "“Gimme Gimme This... Gimme Gimme That” Annihilation and Innovation in the Punk Rock Commons",
+              externalIds: { DOI: "10.1215/01642472-2152855" },
+            },
+            {
+              title: "Wrong article",
+              externalIds: { DOI: "10.1215/01642472-3607564" },
+            },
+          ],
+        },
+      };
+    },
+  };
+  const proposal = await mod.lookupItem({
+    itemType: "journalArticle",
+    getField: (field) =>
+      ({
+        DOI: "10.1215/01642472-2152855",
+        title: "Gimme gimme this Gimme gimme that",
+      })[field] || "",
+    getCreators: () => [],
+  });
+  assert.equal(directAttempts, 2);
+  assert.match(proposal.title, /Annihilation and Innovation/);
+});
+
 test("academic article matching tolerates Crossref online and print year differences", async () => {
   globalThis.Zotero.HTTP = {
     request: async () => ({

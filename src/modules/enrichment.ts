@@ -585,7 +585,10 @@ async function fetchCrossrefWork(
     });
     const result = parseCrossrefWork((response.response as any)?.message);
     if (result.DOI && result.title) {
-      const expandedTitle = await fetchSemanticScholarTitle(result.DOI);
+      const expandedTitle = await fetchSemanticScholarTitle(
+        result.DOI,
+        [result.title, result.author].filter(Boolean).join(" "),
+      );
       const crossrefTitle = normalize(result.title);
       const semanticTitle = normalize(expandedTitle || "");
       if (
@@ -605,10 +608,35 @@ async function fetchCrossrefWork(
 
 async function fetchSemanticScholarTitle(
   doi: string,
+  query = "",
 ): Promise<string | undefined> {
   const url = `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}?fields=title`;
+  for (const delay of [0, 1200]) {
+    if (delay) await sleep(delay);
+    try {
+      const response = await Zotero.HTTP.request("GET", url, {
+        headers: {
+          "User-Agent":
+            "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+        },
+        timeout: 10000,
+        responseType: "json",
+      });
+      const title = (response.response as any)?.title;
+      if (typeof title === "string" && title.trim()) return title.trim();
+      return undefined;
+    } catch (error) {
+      const message = String(error);
+      ztoolkit.log(`Semantic Scholar title lookup error: ${message}`);
+      if (!/429|too many requests|rate limit/i.test(message) || delay === 1200)
+        break;
+    }
+  }
+
+  if (!query) return undefined;
+  const searchURL = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query)}&limit=10&fields=title,externalIds`;
   try {
-    const response = await Zotero.HTTP.request("GET", url, {
+    const response = await Zotero.HTTP.request("GET", searchURL, {
       headers: {
         "User-Agent":
           "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
@@ -616,10 +644,19 @@ async function fetchSemanticScholarTitle(
       timeout: 10000,
       responseType: "json",
     });
-    const title = (response.response as any)?.title;
-    return typeof title === "string" && title.trim() ? title.trim() : undefined;
+    const normalizedDOI = doi.trim().toLowerCase();
+    const match = ((response.response as any)?.data || []).find(
+      (paper: any) =>
+        typeof paper?.title === "string" &&
+        String(paper?.externalIds?.DOI || "")
+          .trim()
+          .toLowerCase() === normalizedDOI,
+    );
+    return typeof match?.title === "string" && match.title.trim()
+      ? match.title.trim()
+      : undefined;
   } catch (error) {
-    ztoolkit.log(`Semantic Scholar title lookup error: ${error}`);
+    ztoolkit.log(`Semantic Scholar search title lookup error: ${error}`);
     return undefined;
   }
 }

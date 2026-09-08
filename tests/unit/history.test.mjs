@@ -206,6 +206,25 @@ test("review proposes fuller titles and author names", () => {
   ]);
 });
 
+test("review keeps a title proposal when only punctuation and casing differ", () => {
+  const target = {
+    ...item({ title: "Gimme gimme this Gimme gimme that" }),
+    getCreators: () => [],
+  };
+  assert.deepEqual(
+    review.proposedChanges(target, {
+      title: "“Gimme Gimme This... Gimme Gimme That”",
+    }),
+    [
+      {
+        field: "title",
+        before: "Gimme gimme this Gimme gimme that",
+        after: "“Gimme Gimme This... Gimme Gimme That”",
+      },
+    ],
+  );
+});
+
 test("title changes pass history validation and save", async () => {
   const values = { title: "Short title" };
   const target = {

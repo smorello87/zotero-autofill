@@ -257,9 +257,7 @@ export function proposedChanges(
     const before = getCurrentValue(item, field);
     if (
       value &&
-      (!before ||
-        (field === "title" &&
-          normalizeForMatch(before) !== normalizeForMatch(String(value))))
+      (!before || (field === "title" && before.trim() !== String(value).trim()))
     )
       changes.push({ field, before, after: String(value) });
   }

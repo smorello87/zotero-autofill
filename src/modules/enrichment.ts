@@ -584,10 +584,43 @@ async function fetchCrossrefWork(
       responseType: "json",
     });
     const result = parseCrossrefWork((response.response as any)?.message);
+    if (result.DOI && result.title) {
+      const expandedTitle = await fetchSemanticScholarTitle(result.DOI);
+      const crossrefTitle = normalize(result.title);
+      const semanticTitle = normalize(expandedTitle || "");
+      if (
+        expandedTitle &&
+        semanticTitle.length > crossrefTitle.length &&
+        semanticTitle.includes(crossrefTitle)
+      ) {
+        result.title = expandedTitle;
+      }
+    }
     return result.DOI ? result : null;
   } catch (error) {
     ztoolkit.log(`Crossref DOI lookup error for ${normalized}: ${error}`);
     return null;
+  }
+}
+
+async function fetchSemanticScholarTitle(
+  doi: string,
+): Promise<string | undefined> {
+  const url = `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}?fields=title`;
+  try {
+    const response = await Zotero.HTTP.request("GET", url, {
+      headers: {
+        "User-Agent":
+          "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+      },
+      timeout: 10000,
+      responseType: "json",
+    });
+    const title = (response.response as any)?.title;
+    return typeof title === "string" && title.trim() ? title.trim() : undefined;
+  } catch (error) {
+    ztoolkit.log(`Semantic Scholar title lookup error: ${error}`);
+    return undefined;
   }
 }
 

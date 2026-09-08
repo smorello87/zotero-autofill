@@ -117,6 +117,43 @@ test("academic article lookup uses Crossref and returns author and journal field
   assert.match(urls[0], /api\.crossref\.org\/works/);
 });
 
+test("DOI article lookup expands shortened Crossref titles", async () => {
+  const urls = [];
+  globalThis.Zotero.HTTP = {
+    request: async (method, url) => {
+      urls.push(url);
+      if (url.includes("semanticscholar.org"))
+        return {
+          response: {
+            title:
+              "Gimme Gimme This... Gimme Gimme That: Annihilation and Innovation in the Punk Rock Commons",
+          },
+        };
+      return {
+        response: {
+          message: {
+            DOI: "10.1215/01642472-2152855",
+            title: ["Gimme Gimme This... Gimme Gimme That"],
+            author: [{ given: "José Esteban", family: "Muñoz" }],
+            "published-print": { "date-parts": [[2013]] },
+          },
+        },
+      };
+    },
+  };
+  const proposal = await mod.lookupItem({
+    itemType: "journalArticle",
+    getField: (field) =>
+      ({
+        DOI: "10.1215/01642472-2152855",
+        title: "Gimme gimme this Gimme gimme that",
+      })[field] || "",
+    getCreators: () => [],
+  });
+  assert.match(proposal.title, /Annihilation and Innovation/);
+  assert.ok(urls.some((url) => url.includes("semanticscholar.org")));
+});
+
 test("academic article matching tolerates Crossref online and print year differences", async () => {
   globalThis.Zotero.HTTP = {
     request: async () => ({

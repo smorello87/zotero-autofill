@@ -257,7 +257,9 @@ export function proposedChanges(
     const before = getCurrentValue(item, field);
     if (
       value &&
-      (!before || (field === "title" && isExpandedValue(before, String(value))))
+      (!before ||
+        (field === "title" &&
+          normalizeForMatch(before) !== normalizeForMatch(String(value))))
     )
       changes.push({ field, before, after: String(value) });
   }

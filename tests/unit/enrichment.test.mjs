@@ -91,6 +91,33 @@ test("academic article lookup uses Crossref and returns author and journal field
   assert.equal(proposal.pages, "44-59");
   assert.match(urls[0], /api\.crossref\.org\/works/);
 });
+
+test("academic article matching tolerates Crossref online and print year differences", async () => {
+  globalThis.Zotero.HTTP = {
+    request: async () => ({
+      response: {
+        message: {
+          items: [
+            {
+              DOI: "10.1234/online-first",
+              URL: "https://doi.org/10.1234/online-first",
+              title: ["A scholarly article"],
+              author: [{ given: "Ana", family: "Ortiz" }],
+              "published-online": { "date-parts": [[2021]] },
+            },
+          ],
+        },
+      },
+    }),
+  };
+  const proposal = await mod.lookupItem({
+    itemType: "journalArticle",
+    getField: (field) =>
+      ({ title: "A scholarly article", date: "2020" })[field] || "",
+    getCreators: () => [{ creatorTypeID: 1, lastName: "Ortiz", fieldMode: 0 }],
+  });
+  assert.equal(proposal.DOI, "10.1234/online-first");
+});
 test("existing ISBN anchors lookup without title search", async () => {
   const urls = [];
   globalThis.Zotero.HTTP = {

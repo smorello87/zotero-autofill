@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadModule } from "./helpers.mjs";
-globalThis.Zotero = { Prefs: { get: () => false } };
+globalThis.Zotero = { Prefs: { get: () => false, set: () => {} } };
 const review = await loadModule("src/modules/enrichmentReview.ts");
 const enrichment = await loadModule("src/modules/enrichment.ts");
 const change = (field, before, after) => ({ field, before, after });
@@ -72,15 +72,11 @@ test("failed history save restores the live item after DB rollback", async () =>
     setField: (f, v) => {
       values[f] = v;
     },
-    save: async () => {},
+    save: async () => {
+      throw Error("History failed");
+    },
   };
   globalThis.Zotero.DB = { executeTransaction: async (cb) => cb() };
-  globalThis.Zotero.Item = class {
-    setNote() {}
-    async save() {
-      throw Error("History failed");
-    }
-  };
   await assert.rejects(
     review.saveReviewedChanges(
       target,

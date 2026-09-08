@@ -120,12 +120,60 @@ function applyChange(item: Zotero.Item, change: FieldChange): void {
 }
 
 const marker = "CUNY-METADATA-HISTORY:";
-const escapeHTML = (value: string) =>
-  value.replace(
-    /[&<>"]/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!,
-  );
+const HISTORY_PREF = "extensions.zotero.metadata-assistant.privateHistory";
 
+interface StoredHistory {
+  nextId: number;
+  items: Record<string, Array<{ id: number; record: HistoryRecord }>>;
+}
+
+function historyItemKey(item: Zotero.Item): string {
+  return `${item.libraryID}:${item.id}`;
+}
+
+function readPrivateHistory(): StoredHistory {
+  const raw = Zotero.Prefs.get(HISTORY_PREF, true);
+  if (typeof raw !== "string" || !raw)
+    return { nextId: 1_000_000_000_000, items: {} };
+  try {
+    const parsed = JSON.parse(raw) as StoredHistory;
+    if (
+      parsed &&
+      Number.isSafeInteger(parsed.nextId) &&
+      parsed.nextId > 0 &&
+      parsed.items &&
+      typeof parsed.items === "object"
+    )
+      return parsed;
+  } catch {
+    /* Ignore malformed plugin state. */
+  }
+  return { nextId: 1_000_000_000_000, items: {} };
+}
+
+function writePrivateHistory(store: StoredHistory): void {
+  Zotero.Prefs.set(HISTORY_PREF, JSON.stringify(store), true);
+}
+
+function privateHistoryForItem(
+  item: Zotero.Item,
+): Array<{ id: number; record: HistoryRecord }> {
+  return readPrivateHistory().items[historyItemKey(item)] || [];
+}
+
+function appendPrivateHistory(
+  item: Zotero.Item,
+  record: HistoryRecord,
+): number {
+  const store = readPrivateHistory();
+  const id = store.nextId++;
+  const key = historyItemKey(item);
+  const records = store.items[key] || [];
+  records.push({ id, record });
+  store.items[key] = records.slice(-100);
+  writePrivateHistory(store);
+  return id;
+}
 export function proposedChanges(
   item: Zotero.Item,
   result: EnrichmentResult,
@@ -203,6 +251,13 @@ export async function saveReviewedChanges(
       );
   }
   const applied: FieldChange[] = [];
+  const record: HistoryRecord = {
+    version: 1,
+    date: new Date().toISOString(),
+    source,
+    changes,
+    undoOf,
+  };
   try {
     await Zotero.DB.executeTransaction(async () => {
       for (const change of changes) {
@@ -214,24 +269,8 @@ export async function saveReviewedChanges(
         applied.push(change);
       }
       await item.save();
-      const history = new Zotero.Item("note");
-      history.libraryID = item.libraryID;
-      history.parentID = item.id;
-      const record = {
-        version: 1,
-        date: new Date().toISOString(),
-        source,
-        changes,
-        undoOf,
-      };
-      const sourceHTML = /^https:\/\//.test(source)
-        ? `<a href="${escapeHTML(source)}">${escapeHTML(source)}</a>`
-        : escapeHTML(source);
-      history.setNote(
-        `<h2>CUNY AI Lab — metadata ${undoOf ? "undo" : "changes"}</h2><p>${sourceHTML}</p><pre>${escapeHTML(changes.map((c) => `${c.field}: ${c.before || "(empty)"} → ${c.after || "(empty)"}`).join("\n"))}</pre><p>${marker}${encodeURIComponent(JSON.stringify(record))}</p>`,
-      );
-      await history.save();
     });
+    appendPrivateHistory(item, record);
   } catch (error) {
     // The DB transaction rolls back persisted data; also restore the cached object.
     for (const change of applied) {
@@ -479,8 +518,10 @@ export async function undoSelectedEnrichment(): Promise<void> {
   const rows: ReviewRow[] = [];
   for (const item of Zotero.getActiveZoteroPane().getSelectedItems()) {
     if (!item.isRegularItem()) continue;
+    const records: Array<{ id: number; record: unknown }> = [
+      ...privateHistoryForItem(item),
+    ];
     const notes = await Zotero.Items.getAsync(item.getNotes());
-    const records: Array<{ id: number; record: unknown }> = [];
     for (const note of notes) {
       const encoded = note
         .getNote()

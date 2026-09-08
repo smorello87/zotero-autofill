@@ -622,9 +622,7 @@ export async function searchCrossref(
           })
           .filter(
             (candidate: APICandidate) =>
-              Boolean(candidate.title) &&
-              Boolean(candidate.result.DOI) &&
-              (year === null || candidate.year === String(year)),
+              Boolean(candidate.title) && Boolean(candidate.result.DOI),
           )
       : [];
     return {
@@ -652,18 +650,27 @@ export async function selectBestCandidate(
   author: string,
   year: number | null,
   candidates: APICandidate[],
+  options: { allowArticleYearMismatch?: boolean } = {},
 ): Promise<EnrichmentResult | null> {
-  const suitable = candidates.filter(
+  const identityMatches = candidates.filter(
     (c) =>
       normalize(c.title || "") === normalize(title) &&
       (!author ||
-        ` ${normalize(c.author || "")} `.includes(` ${normalize(author)} `)) &&
-      (year === null || c.year === String(year)),
+        ` ${normalize(c.author || "")} `.includes(` ${normalize(author)} `)),
+  );
+  const suitable = identityMatches.filter(
+    (c) => year === null || c.year === String(year),
   );
   // A single candidate with all supplied identifying fields matched is safe
   // to review even when one field is missing from the Zotero item. This lets
   // the review UI repair incomplete records instead of silently dropping them.
   if (suitable.length === 1) return addCandidateAuthor(suitable[0]);
+  if (
+    options.allowArticleYearMismatch &&
+    suitable.length === 0 &&
+    identityMatches.length === 1
+  )
+    return addCandidateAuthor(identityMatches[0]);
   if (!suitable.length || !isLLMAvailable()) return null;
   const choice = await llmDisambiguate(title, author, year, suitable);
   if (!choice || choice.selectedIndex === null || choice.confidence < 0.9)
@@ -689,6 +696,7 @@ export async function lookupItem(
       author,
       year,
       crossref.candidates,
+      { allowArticleYearMismatch: true },
     );
     if (!result && isLLMAvailable()) {
       const cleaned = await llmCleanupQuery(title, author);
@@ -699,6 +707,7 @@ export async function lookupItem(
           cleaned.author,
           year,
           retry.candidates,
+          { allowArticleYearMismatch: true },
         );
       }
     }

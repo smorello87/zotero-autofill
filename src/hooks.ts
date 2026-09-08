@@ -120,7 +120,15 @@ function registerContextMenu() {
     tag: "menuitem",
     label: getString("menu-enrich-metadata"),
     commandListener: () => {
-      EnrichmentFactory.enrichSelectedItems();
+      void EnrichmentFactory.enrichSelectedItems().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        ztoolkit.log(`Metadata enrichment command failed: ${message}`);
+        Zotero.alert(
+          Zotero.getMainWindow(),
+          "CUNY AI Lab Metadata Assistant",
+          `Metadata search failed: ${message}`,
+        );
+      });
     },
     icon: `chrome://${addon.data.config.addonRef}/content/icons/favicon.png`,
   });

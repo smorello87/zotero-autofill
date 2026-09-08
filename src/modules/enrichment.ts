@@ -820,6 +820,14 @@ export async function enrichItems(
 export class EnrichmentFactory {
   static async enrichSelectedItems(): Promise<void> {
     const items = Zotero.getActiveZoteroPane().getSelectedItems();
+    if (!items.length) {
+      Zotero.alert(
+        Zotero.getMainWindow(),
+        "CUNY AI Lab Metadata Assistant",
+        "Select at least one book or scholarly article first.",
+      );
+      return;
+    }
     const popup = new ztoolkit.ProgressWindow(addon.data.config.addonName)
       .createLine({ text: "Looking up metadata…" })
       .show();
@@ -832,16 +840,27 @@ export class EnrichmentFactory {
         await sleep(0);
         openEnrichmentReview(stats.proposals);
       } else {
+        const message = stats.errors.length
+          ? `No suggestions found. ${stats.errors[0]}`
+          : `No matching metadata found (${stats.notFound} unresolved; ${stats.skipped} skipped).`;
         popup.changeLine({
-          text: stats.errors.length
-            ? `No suggestions: ${stats.errors[0]}`
-            : `${stats.notFound} unresolved; ${stats.skipped} skipped`,
+          text: message,
           progress: 100,
         });
+        Zotero.alert(
+          Zotero.getMainWindow(),
+          "CUNY AI Lab Metadata Assistant",
+          message,
+        );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       ztoolkit.log(`Metadata review failed: ${message}`);
+      Zotero.alert(
+        Zotero.getMainWindow(),
+        "CUNY AI Lab Metadata Assistant",
+        `Metadata review failed: ${message}`,
+      );
       if (popupClosed) {
         new ztoolkit.ProgressWindow(addon.data.config.addonName)
           .createLine({ text: `Metadata review failed: ${message}` })

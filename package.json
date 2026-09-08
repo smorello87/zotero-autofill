@@ -2,7 +2,7 @@
   "name": "zotero-metadata-assistant",
   "type": "module",
   "version": "1.0.0",
-  "description": "Auto-fill missing metadata and import bibliography text using AI",
+  "description": "A CUNY AI Lab tool for reviewing scholarly metadata and importing bibliographies",
   "config": {
     "addonName": "Zotero Metadata Assistant",
     "addonID": "zotero-metadata-assistant@smorello.org",
@@ -27,7 +27,8 @@
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
     "test": "zotero-plugin test",
-    "update-deps": "npm update --save"
+    "update-deps": "npm update --save",
+    "test:unit": "node --test tests/unit/*.test.mjs"
   },
   "dependencies": {
     "zotero-plugin-toolkit": "^5.1.0-beta.4"

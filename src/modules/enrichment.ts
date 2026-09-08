@@ -1,6 +1,6 @@
 /**
  * Enrichment module for Zotero Metadata Assistant
- * Searches Open Library and Google Books to fill missing metadata
+ * Searches Open Library, Google Books, and Crossref to fill missing metadata
  * Includes LLM-enhanced features: fuzzy matching fallback and disambiguation
  */
 
@@ -9,19 +9,33 @@ import { isLLMAvailable, llmCleanupQuery, llmDisambiguate } from "./llmClient";
 
 // ==================== Types ====================
 
-interface EnrichmentResult {
+export interface EnrichmentAuthor {
+  given?: string;
+  family?: string;
+  name?: string;
+}
+
+export interface EnrichmentResult {
+  source?: string;
+  author?: string;
+  authors?: EnrichmentAuthor[];
   ISBN?: string;
+  DOI?: string;
   OCLC?: string;
   LCCN?: string;
   publisher?: string;
   place?: string;
+  containerTitle?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
   numPages?: number;
   date?: string;
   tags?: string[];
   abstractNote?: string;
 }
 
-interface APICandidate {
+export interface APICandidate {
   title?: string;
   author?: string;
   year?: string;
@@ -30,11 +44,42 @@ interface APICandidate {
   result: EnrichmentResult;
 }
 
-interface EnrichmentStats {
+function authorLabel(author: EnrichmentAuthor | undefined): string {
+  return (
+    [author?.given, author?.family].filter(Boolean).join(" ") ||
+    author?.name ||
+    ""
+  );
+}
+
+export interface EnrichmentProposal {
+  item: Zotero.Item;
+  result: EnrichmentResult;
+}
+
+export interface EnrichmentStats {
   found: number;
   notFound: number;
   preIsbn: number;
   skipped: number;
+  proposals: EnrichmentProposal[];
+}
+
+interface EnrichmentOptions {
+  openReview?: boolean;
+}
+
+const ENRICHABLE_ITEM_TYPES = new Set([
+  "book",
+  "journalArticle",
+  "conferencePaper",
+  "thesis",
+  "report",
+  "preprint",
+]);
+
+export function isEnrichableItem(item: Zotero.Item): boolean {
+  return ENRICHABLE_ITEM_TYPES.has(item.itemType);
 }
 
 // ==================== Helper Functions ====================
@@ -76,12 +121,88 @@ function getFirstAuthor(item: Zotero.Item): string {
   return "";
 }
 
+function addCandidateAuthor(candidate: APICandidate): EnrichmentResult {
+  const result = { ...candidate.result };
+  if (candidate.author && !result.author) result.author = candidate.author;
+  return result;
+}
+
 // ==================== API Search Functions ====================
+
+function validISBN(value: string): boolean {
+  if (/^97[89]\d{10}$/.test(value))
+    return (
+      [...value].reduce(
+        (sum, digit, index) => sum + Number(digit) * (index % 2 ? 3 : 1),
+        0,
+      ) %
+        10 ===
+      0
+    );
+  if (/^\d{9}[\dX]$/.test(value))
+    return (
+      [...value].reduce(
+        (sum, digit, index) =>
+          sum + (digit === "X" ? 10 : Number(digit)) * (10 - index),
+        0,
+      ) %
+        11 ===
+      0
+    );
+  return false;
+}
+
+function canonicalISBN(value: string): string {
+  const normalized = value.replace(/[-\s]/g, "").toUpperCase();
+  if (!validISBN(normalized)) return "";
+  if (normalized.length === 13) return normalized;
+  const stem = `978${normalized.slice(0, 9)}`;
+  const sum = [...stem].reduce(
+    (total, digit, index) => total + Number(digit) * (index % 2 ? 3 : 1),
+    0,
+  );
+  return `${stem}${(10 - (sum % 10)) % 10}`;
+}
+
+async function resolveOpenLibraryAuthors(
+  authors: unknown,
+): Promise<EnrichmentAuthor[]> {
+  if (!Array.isArray(authors)) return [];
+  const directAuthors = authors
+    .map((author: any) => author?.name || author?.author?.name)
+    .filter(
+      (author: unknown): author is string =>
+        typeof author === "string" && Boolean(author.trim()),
+    )
+    .map((name) => ({ name: name.trim() }));
+  if (directAuthors.length) return directAuthors;
+
+  const resolved: EnrichmentAuthor[] = [];
+  for (const author of authors) {
+    const key = String(author?.key || author?.author?.key || "");
+    if (!/^\/authors\/OL\d+A$/.test(key)) continue;
+    try {
+      await sleep(Math.max(1100, Number(getPref("apiDelayMs")) || 1100));
+      const response = await Zotero.HTTP.request(
+        "GET",
+        `https://openlibrary.org${key}.json`,
+        { timeout: 10000, responseType: "json" },
+      );
+      const name = String((response.response as any)?.name || "").trim();
+      if (name) resolved.push({ name });
+    } catch (error) {
+      ztoolkit.log(`Open Library author fetch error for ${key}: ${error}`);
+    }
+  }
+  return resolved;
+}
 
 /**
  * Fetch detailed edition data from Open Library using ISBN
  */
-async function fetchOpenLibraryEdition(isbn: string): Promise<EnrichmentResult | null> {
+async function fetchOpenLibraryEdition(
+  isbn: string,
+): Promise<EnrichmentResult | null> {
   const url = `https://openlibrary.org/isbn/${isbn}.json`;
 
   try {
@@ -91,8 +212,30 @@ async function fetchOpenLibraryEdition(isbn: string): Promise<EnrichmentResult |
     });
 
     const data = response.response as any;
+    if (!data || typeof data.title !== "string" || !data.title.trim())
+      return null;
+    const identifiers = [
+      ...(Array.isArray(data.isbn_13) ? data.isbn_13 : []),
+      ...(Array.isArray(data.isbn_10) ? data.isbn_10 : []),
+    ];
+    if (
+      identifiers.length &&
+      !identifiers.some(
+        (value) =>
+          typeof value === "string" &&
+          canonicalISBN(value) === canonicalISBN(isbn),
+      )
+    )
+      return null;
     const result: EnrichmentResult = {};
 
+    result.ISBN = isbn;
+    result.source = url;
+    const authors = await resolveOpenLibraryAuthors(data.authors);
+    if (authors.length) {
+      result.authors = authors;
+      result.author = authorLabel(authors[0]);
+    }
     // Publisher
     if (data.publishers && data.publishers.length > 0) {
       result.publisher = data.publishers[0];
@@ -119,11 +262,13 @@ async function fetchOpenLibraryEdition(isbn: string): Promise<EnrichmentResult |
 
     // Description/abstract
     if (data.description) {
-      const desc = typeof data.description === "string"
-        ? data.description
-        : data.description.value || "";
+      const desc =
+        typeof data.description === "string"
+          ? data.description
+          : data.description.value || "";
       if (desc) {
-        result.abstractNote = desc.length > 500 ? desc.substring(0, 497) + "..." : desc;
+        result.abstractNote =
+          desc.length > 500 ? desc.substring(0, 497) + "..." : desc;
       }
     }
 
@@ -137,85 +282,15 @@ async function fetchOpenLibraryEdition(isbn: string): Promise<EnrichmentResult |
       result.OCLC = data.oclc_numbers[0];
     }
 
-    ztoolkit.log(`Open Library edition data for ISBN ${isbn}: publisher=${result.publisher}, place=${result.place}, pages=${result.numPages}`);
+    ztoolkit.log(
+      `Open Library edition data for ISBN ${isbn}: publisher=${result.publisher}, place=${result.place}, pages=${result.numPages}`,
+    );
 
     return Object.keys(result).length > 0 ? result : null;
   } catch (error) {
     ztoolkit.log(`Open Library edition fetch error for ISBN ${isbn}: ${error}`);
     return null;
   }
-}
-
-/**
- * Parse an Open Library search doc into EnrichmentResult
- */
-function parseOpenLibraryDoc(doc: any): EnrichmentResult {
-  const result: EnrichmentResult = {};
-
-  // Get ISBNs (prefer ISBN-13)
-  if (doc.isbn && doc.isbn.length > 0) {
-    const isbn13 = doc.isbn.find((i: string) => i.length === 13);
-    const isbn10 = doc.isbn.find((i: string) => i.length === 10);
-    result.ISBN = isbn13 || isbn10;
-  }
-
-  // Get OCLC numbers
-  if (doc.oclc && doc.oclc.length > 0) {
-    result.OCLC = Array.isArray(doc.oclc) ? doc.oclc[0] : doc.oclc;
-  }
-
-  // Get LCCN
-  if (doc.lccn && doc.lccn.length > 0) {
-    result.LCCN = Array.isArray(doc.lccn) ? doc.lccn[0] : doc.lccn;
-  }
-
-  // Get page count (median across editions from search)
-  if (doc.number_of_pages_median) {
-    result.numPages = doc.number_of_pages_median;
-  }
-
-  // Get publisher (from search - may not always be present)
-  if (doc.publisher && doc.publisher.length > 0) {
-    result.publisher = Array.isArray(doc.publisher)
-      ? doc.publisher[0]
-      : doc.publisher;
-  }
-
-  // Get publisher place (from search - rarely present)
-  if (doc.publish_place && doc.publish_place.length > 0) {
-    result.place = Array.isArray(doc.publish_place)
-      ? doc.publish_place[0]
-      : doc.publish_place;
-  }
-
-  // Get publication year
-  if (doc.first_publish_year) {
-    result.date = doc.first_publish_year.toString();
-  }
-
-  // Get subjects/keywords (limit to first 5)
-  if (doc.subject && doc.subject.length > 0) {
-    result.tags = doc.subject.slice(0, 5);
-  }
-
-  return result;
-}
-
-/**
- * Merge two enrichment results, preferring non-empty values from the second
- */
-function mergeEnrichmentResults(base: EnrichmentResult, additional: EnrichmentResult): EnrichmentResult {
-  return {
-    ISBN: base.ISBN || additional.ISBN,
-    OCLC: base.OCLC || additional.OCLC,
-    LCCN: base.LCCN || additional.LCCN,
-    publisher: additional.publisher || base.publisher,
-    place: additional.place || base.place,
-    numPages: additional.numPages || base.numPages,
-    date: additional.date || base.date,
-    tags: base.tags || additional.tags,
-    abstractNote: additional.abstractNote || base.abstractNote,
-  };
 }
 
 /**
@@ -226,12 +301,19 @@ export async function searchOpenLibrary(
   title: string,
   author: string,
   year: number | null,
-): Promise<{ candidates: APICandidate[]; bestResult: EnrichmentResult | null }> {
+): Promise<{
+  candidates: APICandidate[];
+  bestResult: EnrichmentResult | null;
+}> {
   const params = new URLSearchParams();
   params.set("title", title);
   if (author) params.set("author", author);
-  if (year) params.set("first_publish_year", year.toString());
+  if (year) params.set("q", `publish_year:${year}`);
   params.set("limit", "5");
+  params.set(
+    "fields",
+    "key,title,author_name,editions,editions.key,editions.title,editions.isbn,editions.publish_date,editions.publisher,editions.language",
+  );
 
   const url = `https://openlibrary.org/search.json?${params.toString()}`;
 
@@ -247,13 +329,40 @@ export async function searchOpenLibrary(
       const candidates: APICandidate[] = [];
 
       for (const doc of data.docs.slice(0, 5)) {
-        const result = parseOpenLibraryDoc(doc);
-        if (Object.keys(result).length > 0) {
-          candidates.push({
-            title: doc.title,
+        // Never combine identifiers or aggregate page counts from different editions.
+        for (const edition of doc.editions?.docs || []) {
+          const isbn = edition.isbn?.find((value: string) =>
+            /^\d{13}$/.test(value),
+          );
+          const key = edition.key?.replace(/^\/books\//, "");
+          if (!key || !/^OL\d+M$/.test(key)) continue;
+          const editionURL = `https://openlibrary.org/books/${key}.json`;
+          await sleep(1100);
+          const detail = await Zotero.HTTP.request("GET", editionURL, {
+            timeout: 10000,
+            responseType: "json",
+          });
+          const data = detail.response as any;
+          const authors = (doc.author_name || []).map((name: string) => ({
+            name,
+          }));
+          const result: EnrichmentResult = {
             author: doc.author_name?.[0],
-            year: doc.first_publish_year?.toString(),
-            publisher: doc.publisher?.[0],
+            authors,
+            ISBN: data.isbn_13?.[0] || data.isbn_10?.[0] || isbn,
+            publisher: data.publishers?.[0],
+            place: data.publish_places?.[0],
+            numPages: data.number_of_pages,
+            date: data.publish_date?.match(/\d{4}/)?.[0],
+            OCLC: data.oclc_numbers?.[0],
+            LCCN: data.lccn?.[0],
+            source: editionURL,
+          };
+          candidates.push({
+            title: data.title || edition.title,
+            author: doc.author_name?.[0],
+            year: result.date,
+            publisher: result.publisher,
             isbn: result.ISBN,
             result,
           });
@@ -321,6 +430,11 @@ function parseGoogleBooksVolume(volumeInfo: any): EnrichmentResult {
     result.abstractNote = desc;
   }
 
+  if (Array.isArray(volumeInfo.authors) && volumeInfo.authors.length) {
+    result.authors = volumeInfo.authors.map((name: string) => ({ name }));
+    result.author = volumeInfo.authors[0];
+  }
+
   return result;
 }
 
@@ -331,12 +445,15 @@ function parseGoogleBooksVolume(volumeInfo: any): EnrichmentResult {
 export async function searchGoogleBooks(
   title: string,
   author: string,
-): Promise<{ candidates: APICandidate[]; bestResult: EnrichmentResult | null }> {
+): Promise<{
+  candidates: APICandidate[];
+  bestResult: EnrichmentResult | null;
+}> {
   const queryParts: string[] = [];
   if (title) queryParts.push(`intitle:${title}`);
   if (author) queryParts.push(`inauthor:${author}`);
 
-  const query = queryParts.join("+");
+  const query = queryParts.join(" ");
   const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=5`;
 
   try {
@@ -353,6 +470,7 @@ export async function searchGoogleBooks(
       for (const item of data.items.slice(0, 5)) {
         const volumeInfo = item.volumeInfo || {};
         const result = parseGoogleBooksVolume(volumeInfo);
+        result.source = `https://books.google.com/books?id=${encodeURIComponent(item.id)}`;
 
         if (Object.keys(result).length > 0) {
           const yearMatch = volumeInfo.publishedDate?.match(/^(\d{4})/);
@@ -379,324 +497,331 @@ export async function searchGoogleBooks(
   return { candidates: [], bestResult: null };
 }
 
-// ==================== Main Enrichment Functions ====================
-
-/**
- * Apply enrichment result to a Zotero item (only fill missing fields)
- */
-async function applyEnrichmentToItem(
-  item: Zotero.Item,
-  result: EnrichmentResult,
-): Promise<boolean> {
-  let modified = false;
-
-  // ISBN
-  if (result.ISBN && !item.getField("ISBN")) {
-    item.setField("ISBN", result.ISBN);
-    modified = true;
-  }
-
-  // Publisher
-  if (result.publisher && !item.getField("publisher")) {
-    item.setField("publisher", result.publisher);
-    modified = true;
-  }
-
-  // Place
-  if (result.place && !item.getField("place")) {
-    item.setField("place", result.place);
-    modified = true;
-  }
-
-  // Number of pages
-  if (result.numPages && !item.getField("numPages")) {
-    item.setField("numPages", result.numPages.toString());
-    modified = true;
-  }
-
-  // Date
-  if (result.date && !item.getField("date")) {
-    item.setField("date", result.date);
-    modified = true;
-  }
-
-  // Abstract
-  if (result.abstractNote && !item.getField("abstractNote")) {
-    item.setField("abstractNote", result.abstractNote);
-    modified = true;
-  }
-
-  // Call number (LCCN)
-  if (result.LCCN && !item.getField("callNumber")) {
-    item.setField("callNumber", result.LCCN);
-    modified = true;
-  }
-
-  // Extra field for OCLC
-  if (result.OCLC) {
-    const extra = item.getField("extra") as string;
-    if (!extra || !extra.includes("OCLC:")) {
-      const newExtra = extra ? `${extra}\nOCLC: ${result.OCLC}` : `OCLC: ${result.OCLC}`;
-      item.setField("extra", newExtra);
-      modified = true;
-    }
-  }
-
-  // Tags
-  if (result.tags && result.tags.length > 0) {
-    const existingTags = item.getTags().map((t) => t.tag.toLowerCase());
-    for (const tag of result.tags) {
-      if (!existingTags.includes(tag.toLowerCase())) {
-        item.addTag(tag);
-        modified = true;
-      }
-    }
-  }
-
-  if (modified) {
-    await item.saveTx();
-  }
-
-  return modified;
+function crossrefYear(work: any): string | undefined {
+  const parts =
+    work?.["published-print"]?.["date-parts"]?.[0] ||
+    work?.["published-online"]?.["date-parts"]?.[0] ||
+    work?.issued?.["date-parts"]?.[0] ||
+    work?.created?.["date-parts"]?.[0];
+  const year = Array.isArray(parts) ? parts[0] : undefined;
+  return Number.isInteger(year) ? String(year) : undefined;
 }
 
-/**
- * Select the best result from candidates, using LLM disambiguation if available
- */
-async function selectBestCandidate(
+function cleanAbstract(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return undefined;
+  return text.length > 500 ? `${text.substring(0, 497)}...` : text;
+}
+
+function parseCrossrefWork(work: any): EnrichmentResult {
+  const authors = Array.isArray(work?.author)
+    ? work.author
+        .map((author: any): EnrichmentAuthor => {
+          const parsed: EnrichmentAuthor = {};
+          if (typeof author?.given === "string") parsed.given = author.given;
+          if (typeof author?.family === "string") parsed.family = author.family;
+          if (typeof author?.name === "string") parsed.name = author.name;
+          return parsed;
+        })
+        .filter((author: EnrichmentAuthor) => Boolean(authorLabel(author)))
+    : [];
+  const doi = typeof work?.DOI === "string" ? work.DOI : undefined;
+  const result: EnrichmentResult = {
+    source:
+      typeof work?.URL === "string"
+        ? work.URL
+        : doi
+          ? `https://doi.org/${doi}`
+          : undefined,
+    author: authorLabel(authors[0]),
+    authors,
+    DOI: doi,
+    publisher: typeof work?.publisher === "string" ? work.publisher : undefined,
+    containerTitle: Array.isArray(work?.["container-title"])
+      ? work["container-title"][0]
+      : undefined,
+    volume: typeof work?.volume === "string" ? work.volume : undefined,
+    issue: typeof work?.issue === "string" ? work.issue : undefined,
+    pages: typeof work?.page === "string" ? work.page : undefined,
+    date: crossrefYear(work),
+    abstractNote: cleanAbstract(work?.abstract),
+  };
+  return Object.fromEntries(
+    Object.entries(result).filter(([, value]) => value !== undefined),
+  ) as EnrichmentResult;
+}
+
+async function fetchCrossrefWork(
+  doi: string,
+): Promise<EnrichmentResult | null> {
+  const normalized = doi
+    .trim()
+    .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+    .replace(/^doi:/i, "");
+  if (!normalized) return null;
+  const url = `https://api.crossref.org/works/${encodeURIComponent(normalized)}`;
+  try {
+    const response = await Zotero.HTTP.request("GET", url, {
+      headers: {
+        "User-Agent":
+          "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+      },
+      timeout: 10000,
+      responseType: "json",
+    });
+    const result = parseCrossrefWork((response.response as any)?.message);
+    return result.DOI ? result : null;
+  } catch (error) {
+    ztoolkit.log(`Crossref DOI lookup error for ${normalized}: ${error}`);
+    return null;
+  }
+}
+
+export async function searchCrossref(
+  title: string,
+  author: string,
+  year: number | null,
+): Promise<{
+  candidates: APICandidate[];
+  bestResult: EnrichmentResult | null;
+}> {
+  const params = new URLSearchParams({
+    "query.bibliographic": [title, author].filter(Boolean).join(" "),
+    rows: "5",
+    select:
+      "DOI,URL,title,author,publisher,container-title,volume,issue,page,published-print,published-online,created,abstract",
+  });
+  const url = `https://api.crossref.org/works?${params.toString()}`;
+  try {
+    const response = await Zotero.HTTP.request("GET", url, {
+      headers: {
+        "User-Agent":
+          "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+      },
+      timeout: 10000,
+      responseType: "json",
+    });
+    const items = (response.response as any)?.message?.items;
+    const candidates = Array.isArray(items)
+      ? items
+          .map((work: any) => {
+            const result = parseCrossrefWork(work);
+            return {
+              title: Array.isArray(work?.title) ? work.title[0] : undefined,
+              author: result.author,
+              year: result.date,
+              publisher: result.publisher,
+              result,
+            } satisfies APICandidate;
+          })
+          .filter(
+            (candidate: APICandidate) =>
+              Boolean(candidate.title) &&
+              Boolean(candidate.result.DOI) &&
+              (year === null || candidate.year === String(year)),
+          )
+      : [];
+    return {
+      candidates,
+      bestResult: candidates.length ? addCandidateAuthor(candidates[0]) : null,
+    };
+  } catch (error) {
+    ztoolkit.log(`Crossref search error: ${error}`);
+    return { candidates: [], bestResult: null };
+  }
+}
+
+// ==================== Reviewable enrichment ====================
+
+function normalize(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+export async function selectBestCandidate(
   title: string,
   author: string,
   year: number | null,
   candidates: APICandidate[],
 ): Promise<EnrichmentResult | null> {
-  if (candidates.length === 0) {
+  const suitable = candidates.filter(
+    (c) =>
+      normalize(c.title || "") === normalize(title) &&
+      (!author ||
+        ` ${normalize(c.author || "")} `.includes(` ${normalize(author)} `)) &&
+      (year === null || c.year === String(year)),
+  );
+  // A single candidate with all supplied identifying fields matched is safe
+  // to review even when one field is missing from the Zotero item. This lets
+  // the review UI repair incomplete records instead of silently dropping them.
+  if (suitable.length === 1) return addCandidateAuthor(suitable[0]);
+  if (!suitable.length || !isLLMAvailable()) return null;
+  const choice = await llmDisambiguate(title, author, year, suitable);
+  if (!choice || choice.selectedIndex === null || choice.confidence < 0.9)
     return null;
-  }
-
-  // If only one candidate or LLM not available, use first result
-  if (candidates.length === 1 || !isLLMAvailable()) {
-    return candidates[0].result;
-  }
-
-  // Use LLM to disambiguate
-  const disambResult = await llmDisambiguate(title, author, year, candidates);
-
-  if (disambResult && disambResult.selectedIndex < candidates.length) {
-    ztoolkit.log(`LLM selected result ${disambResult.selectedIndex} with confidence ${disambResult.confidence}`);
-    if (disambResult.reasoning) {
-      ztoolkit.log(`Reasoning: ${disambResult.reasoning}`);
-    }
-    return candidates[disambResult.selectedIndex].result;
-  }
-
-  // Fall back to first result
-  return candidates[0].result;
+  const selected = suitable[choice.selectedIndex];
+  return selected ? addCandidateAuthor(selected) : null;
 }
 
-/**
- * Enrich a single Zotero item with metadata from online sources
- * Includes LLM-enhanced fuzzy matching and disambiguation
- */
-export async function enrichItem(item: Zotero.Item): Promise<boolean> {
-  // Only enrich books
+export async function lookupItem(
+  item: Zotero.Item,
+): Promise<EnrichmentResult | null> {
+  if (!isEnrichableItem(item)) return null;
   if (item.itemType !== "book") {
-    return false;
-  }
-
-  let title = item.getField("title") as string;
-  let author = getFirstAuthor(item);
-  const year = getYearFromItem(item);
-
-  if (!title) {
-    return false;
-  }
-
-  const isPreIsbn = year !== null && year < 1970;
-  const enrichPreIsbn = getPref("enrichPreIsbn") as boolean;
-  const delayMs = (getPref("apiDelayMs") as number) || 200;
-
-  // Search Open Library first
-  let openLibResult = await searchOpenLibrary(title, author, year);
-  let result: EnrichmentResult | null = null;
-
-  if (openLibResult.candidates.length > 0) {
-    // Use LLM disambiguation if multiple candidates
-    result = await selectBestCandidate(title, author, year, openLibResult.candidates);
-  }
-
-  // If not found, try Google Books as fallback
-  if (!result && !isPreIsbn) {
-    await sleep(delayMs);
-    const googleResult = await searchGoogleBooks(title, author);
-
-    if (googleResult.candidates.length > 0) {
-      result = await selectBestCandidate(title, author, year, googleResult.candidates);
+    const existingDOI = String(item.getField("DOI") || "").trim();
+    if (existingDOI) return fetchCrossrefWork(existingDOI);
+    const title = String(item.getField("title") || "");
+    if (!title) return null;
+    const author = getFirstAuthor(item);
+    const year = getYearFromItem(item);
+    const crossref = await searchCrossref(title, author, year);
+    let result = await selectBestCandidate(
+      title,
+      author,
+      year,
+      crossref.candidates,
+    );
+    if (!result && isLLMAvailable()) {
+      const cleaned = await llmCleanupQuery(title, author);
+      if (cleaned && (cleaned.title !== title || cleaned.author !== author)) {
+        const retry = await searchCrossref(cleaned.title, cleaned.author, year);
+        result = await selectBestCandidate(
+          cleaned.title,
+          cleaned.author,
+          year,
+          retry.candidates,
+        );
+      }
     }
+    return result;
   }
-
-  // If still not found and LLM is available, try fuzzy matching
+  const existingISBN = String(item.getField("ISBN") || "").trim();
+  if (existingISBN) {
+    const isbn = existingISBN
+      .split(/[;,\n]/)
+      .map((value) => value.replace(/[-\s]/g, "").toUpperCase())
+      .find(validISBN);
+    // Do not reinterpret a malformed identifier as permission to choose another edition.
+    return isbn ? fetchOpenLibraryEdition(isbn) : null;
+  }
+  const title = String(item.getField("title") || "");
+  if (!title) return null;
+  const author = getFirstAuthor(item);
+  const year = getYearFromItem(item);
+  const open = await searchOpenLibrary(title, author, year);
+  let result = await selectBestCandidate(title, author, year, open.candidates);
+  if (!result) {
+    await sleep(1100);
+    const google = await searchGoogleBooks(title, author);
+    result = await selectBestCandidate(title, author, year, google.candidates);
+  }
   if (!result && isLLMAvailable()) {
-    ztoolkit.log("No results found, trying LLM cleanup for fuzzy matching...");
-
     const cleaned = await llmCleanupQuery(title, author);
     if (cleaned && (cleaned.title !== title || cleaned.author !== author)) {
-      ztoolkit.log(`LLM cleaned: "${title}" -> "${cleaned.title}", "${author}" -> "${cleaned.author}"`);
-
-      await sleep(delayMs);
-
-      // Retry Open Library with cleaned query
-      const retryOpenLib = await searchOpenLibrary(cleaned.title, cleaned.author, year);
-      if (retryOpenLib.candidates.length > 0) {
-        result = await selectBestCandidate(cleaned.title, cleaned.author, year, retryOpenLib.candidates);
-      }
-
-      // If still not found, try Google Books with cleaned query
-      if (!result && !isPreIsbn) {
-        await sleep(delayMs);
-        const retryGoogle = await searchGoogleBooks(cleaned.title, cleaned.author);
-        if (retryGoogle.candidates.length > 0) {
-          result = await selectBestCandidate(cleaned.title, cleaned.author, year, retryGoogle.candidates);
-        }
-      }
+      await sleep(1100);
+      const retry = await searchOpenLibrary(
+        cleaned.title,
+        cleaned.author,
+        year,
+      );
+      result = await selectBestCandidate(
+        cleaned.title,
+        cleaned.author,
+        year,
+        retry.candidates,
+      );
     }
   }
-
-  // If we have a result with ISBN but missing detailed metadata, fetch edition details
-  if (result && result.ISBN && (!result.publisher || !result.place || !result.numPages)) {
-    ztoolkit.log(`Fetching detailed edition data for ISBN ${result.ISBN}...`);
-    await sleep(delayMs);
-    const editionData = await fetchOpenLibraryEdition(result.ISBN);
-    if (editionData) {
-      result = mergeEnrichmentResults(result, editionData);
-    }
+  if (result && year !== null && year < 1970 && getPref("enrichPreIsbn")) {
+    // A historical edition must not inherit a later reprint's ISBN.
+    delete result.ISBN;
   }
-
-  // Handle pre-ISBN books
-  if (isPreIsbn && enrichPreIsbn) {
-    // Add note about pre-ISBN status
-    const extra = item.getField("extra") as string;
-    if (!extra || !extra.includes("Pre-ISBN")) {
-      const note = "[Pre-ISBN publication (before 1970)]";
-      const newExtra = extra ? `${extra}\n${note}` : note;
-      item.setField("extra", newExtra);
-      await item.saveTx();
-    }
-  }
-
-  // Apply results
-  if (result) {
-    return await applyEnrichmentToItem(item, result);
-  }
-
-  return false;
+  return result;
 }
 
-/**
- * Enrich multiple Zotero items with progress callback
- */
+export async function enrichItem(item: Zotero.Item): Promise<boolean> {
+  const result = await lookupItem(item);
+  if (!result) return false;
+  const { openEnrichmentReview } = await import("./enrichmentReview");
+  openEnrichmentReview([{ item, result }]);
+  return true;
+}
+
+const pending = new Set<number>();
 export async function enrichItems(
   items: Zotero.Item[],
   progressCallback?: (current: number, total: number, title: string) => void,
+  options: EnrichmentOptions = {},
 ): Promise<EnrichmentStats> {
   const stats: EnrichmentStats = {
     found: 0,
     notFound: 0,
     preIsbn: 0,
     skipped: 0,
+    proposals: [],
   };
-
-  // Filter to books only
-  const books = items.filter((item) => item.itemType === "book");
-
-  if (books.length === 0) {
-    ztoolkit.log("No books to enrich");
-    return stats;
-  }
-
-  ztoolkit.log(`Enriching ${books.length} books with metadata...`);
-
-  const delayMs = (getPref("apiDelayMs") as number) || 200;
-
-  for (let i = 0; i < books.length; i++) {
-    const item = books[i];
-    const title = (item.getField("title") as string) || "Untitled";
-
-    if (progressCallback) {
-      progressCallback(i + 1, books.length, title);
+  for (const [index, item] of items.entries()) {
+    if (!isEnrichableItem(item) || pending.has(item.id)) {
+      stats.skipped++;
+      continue;
     }
-
-    const year = getYearFromItem(item);
-    const isPreIsbn = year !== null && year < 1970;
-
-    if (isPreIsbn) {
-      stats.preIsbn++;
-    }
-
-    const enriched = await enrichItem(item);
-
-    if (enriched) {
-      stats.found++;
-    } else {
+    pending.add(item.id);
+    try {
+      progressCallback?.(
+        index + 1,
+        items.length,
+        String(item.getField("title")),
+      );
+      const result = await lookupItem(item);
+      if (result) {
+        stats.proposals.push({ item, result });
+        stats.found++;
+      } else stats.notFound++;
+    } catch (error) {
       stats.notFound++;
+      ztoolkit.log(`Metadata lookup failed: ${error}`);
+    } finally {
+      pending.delete(item.id);
     }
-
-    // Rate limiting
-    if (i < books.length - 1) {
-      await sleep(delayMs);
-    }
+    await sleep(Math.max(1100, Number(getPref("apiDelayMs")) || 1100));
   }
-
-  // Count skipped non-books
-  stats.skipped = items.length - books.length;
-
-  ztoolkit.log(
-    `Enrichment complete: ${stats.found} enriched, ${stats.notFound} not found, ${stats.preIsbn} pre-ISBN, ${stats.skipped} skipped`,
-  );
-
+  if (stats.proposals.length && options.openReview !== false) {
+    const { openEnrichmentReview } = await import("./enrichmentReview");
+    openEnrichmentReview(stats.proposals);
+  }
   return stats;
 }
 
 export class EnrichmentFactory {
-  /**
-   * Enrich selected items from the context menu
-   */
   static async enrichSelectedItems(): Promise<void> {
     const items = Zotero.getActiveZoteroPane().getSelectedItems();
-
-    if (!items || items.length === 0) {
-      new ztoolkit.ProgressWindow(addon.data.config.addonName)
-        .createLine({
-          text: "No items selected",
-          type: "fail",
-        })
-        .show();
-      return;
-    }
-
-    const popup = new ztoolkit.ProgressWindow(addon.data.config.addonName, {
-      closeOnClick: false,
-      closeTime: -1,
-    })
-      .createLine({
-        text: `Enriching ${items.length} item(s)...`,
-        type: "default",
-        progress: 0,
-      })
+    const popup = new ztoolkit.ProgressWindow(addon.data.config.addonName)
+      .createLine({ text: "Looking up metadata…" })
       .show();
-
-    const stats = await enrichItems(items, (current, total, title) => {
-      const progress = Math.round((current / total) * 100);
-      popup.changeLine({
-        text: `[${current}/${total}] ${title.substring(0, 40)}...`,
-        progress,
-      });
-    });
-
-    popup.changeLine({
-      text: `Done! ${stats.found} enriched, ${stats.notFound} not found`,
-      type: stats.found > 0 ? "success" : "default",
-      progress: 100,
-    });
-    popup.startCloseTimer(5000);
+    let popupClosed = false;
+    try {
+      const stats = await enrichItems(items, undefined, { openReview: false });
+      if (stats.proposals.length) {
+        popup.close();
+        popupClosed = true;
+        await sleep(0);
+        const { openEnrichmentReview } = await import("./enrichmentReview");
+        openEnrichmentReview(stats.proposals);
+      } else {
+        popup.changeLine({
+          text: `${stats.notFound} unresolved; ${stats.skipped} skipped`,
+          progress: 100,
+        });
+      }
+    } finally {
+      if (!popupClosed) popup.startCloseTimer(5000);
+    }
   }
 }

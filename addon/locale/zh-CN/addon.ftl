@@ -1,11 +1,5 @@
-startup-begin = 插件加载中
-startup-finish = 插件已就绪
-menuitem-label = 插件模板: 帮助工具样例
-menupopup-label = 插件模板: 弹出菜单
-menuitem-submenulabel = 插件模板：子菜单
-menuitem-filemenulabel = 插件模板: 文件菜单
-prefs-title = 插件模板
-prefs-table-title = 标题
-prefs-table-detail = 详情
-tabpanel-lib-tab-label = 库标签
-tabpanel-reader-tab-label = 阅读器标签
+startup-begin = 元数据助手正在加载…
+startup-finish = 元数据助手已就绪
+prefs-title = 元数据助手
+menu-enrich-metadata = 从在线来源查找元数据建议
+menu-import-bibliography = 导入参考文献文本…

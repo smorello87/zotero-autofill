@@ -1,66 +1,66 @@
 <?xml version="1.0"?>
-<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
-<?xml-stylesheet href="chrome://zotero/skin/zotero.css" type="text/css"?>
-
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?> <?xml-stylesheet
+href="chrome://zotero/skin/zotero.css" type="text/css"?>
 <!DOCTYPE window>
-
 <window
   xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
   xmlns:html="http://www.w3.org/1999/xhtml"
-  title="Import Bibliography Text"
-  width="600"
-  height="500"
+  title="Zotero Metadata Assistant — CUNY AI Lab"
+  width="780"
+  height="760"
   onload="window.arguments[0].onLoad(window);"
 >
-  <vbox flex="1" style="padding: 10px;">
-    <!-- Header -->
-    <label style="font-size: 14px; font-weight: bold; margin-bottom: 10px;">
-      Import Bibliography Text
-    </label>
-
-    <description style="margin-bottom: 10px;">
-      Paste bibliographic entries below (one entry per paragraph). The AI will parse them into Zotero items.
-    </description>
-
-    <!-- Text input area -->
-    <groupbox flex="1">
-      <caption label="Bibliography Text" />
-      <html:textarea
-        id="bibliography-input"
-        style="width: 100%; height: 200px; font-family: monospace; font-size: 12px;"
-        placeholder="Paste bibliography entries here...
-
-Example:
-Smith, John. 2020. The Art of Programming. New York: Tech Press.
-
-Jones, Mary, and Bob Brown. 1995. Advanced Algorithms. Boston: Academic Publishers."
-      ></html:textarea>
-    </groupbox>
-
-    <!-- Options -->
-    <hbox align="center" style="margin-top: 10px;">
-      <checkbox id="auto-enrich" label="Auto-enrich after import" checked="true" />
+  <vbox flex="1" style="padding: 16px; overflow: auto">
+    <html:h1 style="font-size: 20px; margin: 0"
+      >Import bibliography text</html:h1
+    >
+    <html:p
+      >A CUNY AI Lab tool. Parse, check the original, then import selected
+      entries.</html:p
+    >
+    <html:p id="destination"></html:p>
+    <html:p
+      >When you choose “Parse with AI”, this text is sent to the selected
+      provider using your API key or CUNY allocation. Provider charges or quotas
+      may apply. AI can make mistakes; verify each citation below.</html:p
+    >
+    <html:label for="bibliography-input"
+      >Bibliography text (separate multiline citations with blank
+      lines)</html:label
+    >
+    <html:textarea
+      id="bibliography-input"
+      rows="6"
+      style="width: 100%; box-sizing: border-box"
+      placeholder="Paste bibliography entries here"
+    ></html:textarea>
+    <html:p id="entry-count"></html:p>
+    <html:label
+      ><html:input type="checkbox" id="auto-enrich" /> Look up additional
+      metadata after import and review proposed changes</html:label
+    >
+    <html:p
+      id="results-text"
+      role="status"
+      aria-live="polite"
+      style="white-space: pre-wrap"
+      >Parsed entries will appear below for review. Nothing is imported until
+      you choose “Import selected”.</html:p
+    >
+    <html:div id="review-items"></html:div>
+    <hbox style="margin-top: 12px">
       <spacer flex="1" />
-      <label id="entry-count" value="" />
-    </hbox>
-
-    <!-- Progress area (hidden by default) -->
-    <vbox id="progress-area" hidden="true" style="margin-top: 10px;">
-      <label id="progress-label" value="Processing..." />
-      <progressmeter id="progress-meter" mode="determined" value="0" />
-    </vbox>
-
-    <!-- Status/Results area -->
-    <groupbox id="results-area" hidden="true" style="margin-top: 10px;">
-      <caption label="Results" />
-      <description id="results-text" style="white-space: pre-wrap;"></description>
-    </groupbox>
-
-    <!-- Buttons -->
-    <hbox style="margin-top: 15px;">
-      <spacer flex="1" />
-      <button id="parse-button" label="Parse with AI" oncommand="window.dialogArgs.onParse();" />
-      <button id="import-button" label="Import to Zotero" disabled="true" oncommand="window.dialogArgs.onImport();" />
+      <button
+        id="parse-button"
+        label="Parse with AI"
+        oncommand="window.dialogArgs.onParse();"
+      />
+      <button
+        id="import-button"
+        label="Import selected"
+        disabled="true"
+        oncommand="window.dialogArgs.onImport();"
+      />
       <button label="Close" oncommand="window.close();" />
     </hbox>
   </vbox>

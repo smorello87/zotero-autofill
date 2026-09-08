@@ -22,7 +22,7 @@ jobs:
           node-version: 20
           cache: npm
       - name: Install deps
-        run: npm install
+        run: npm ci
       - name: Run Lint
         run: npm run lint:check
 
@@ -39,7 +39,7 @@ jobs:
           node-version: 20
           cache: npm
       - name: Install deps
-        run: npm install
+        run: npm ci
       - name: Run Build
         run: npm run build
       - name: Upload build result
@@ -58,5 +58,6 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm install
+      - run: npm ci
+      - run: npm run test:unit
       - run: npm run test

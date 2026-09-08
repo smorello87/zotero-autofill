@@ -1,413 +1,498 @@
-/**
- * Bibliography Import module for Zotero Metadata Assistant
- * Handles importing bibliography text via LLM parsing
- */
-
-import { getPref } from "../utils/prefs";
+/** Reviewed, destination-aware bibliography imports for the CUNY AI Lab. */
 import { isLLMAvailable, parseBibliographyWithLLM } from "./llmClient";
+import { getMissingProviderKeyMessage } from "./provider";
 import { enrichItems } from "./enrichment";
+import {
+  CSLItem,
+  duplicateKeys,
+  escapeHTML,
+  reviewWarnings,
+  splitEntries,
+  validateEditedItem,
+} from "./bibliographyValidation";
 
-// ==================== Types ====================
-
-interface CSLItem {
-  type?: string;
-  title?: string;
-  author?: Array<{ family?: string; given?: string }>;
-  editor?: Array<{ family?: string; given?: string }>;
-  issued?: { "date-parts"?: number[][] };
-  publisher?: string;
-  "publisher-place"?: string;
-  "container-title"?: string;
-  volume?: string;
-  issue?: string;
-  page?: string;
-  ISBN?: string;
-  DOI?: string;
-  URL?: string;
-  abstract?: string;
-  note?: string;
-  language?: string;
+interface ReviewEntry {
+  original: string;
+  item?: CSLItem;
+  error?: string;
+  model?: string;
+  savedID?: number;
+  selected: boolean;
 }
 
-interface DialogState {
-  window: Window | null;
-  parsedItems: CSLItem[];
-  failedEntries: string[];
-}
-
-// ==================== State ====================
-
-const state: DialogState = {
-  window: null,
-  parsedItems: [],
-  failedEntries: [],
+const types: Record<string, string> = {
+  book: "book",
+  chapter: "bookSection",
+  "article-journal": "journalArticle",
+  "article-magazine": "magazineArticle",
+  "article-newspaper": "newspaperArticle",
+  thesis: "thesis",
+  report: "report",
+  manuscript: "manuscript",
+  pamphlet: "document",
+  webpage: "webpage",
+  paper: "conferencePaper",
+  "paper-conference": "conferencePaper",
+  document: "document",
 };
 
-// ==================== Helper Functions ====================
-
-// Valid Zotero item types
-type ZoteroItemType =
-  | "book" | "bookSection" | "journalArticle" | "magazineArticle"
-  | "newspaperArticle" | "thesis" | "report" | "manuscript"
-  | "document" | "webpage" | "conferencePaper";
-
-/**
- * Map CSL type to Zotero item type
- */
-function cslTypeToZotero(cslType: string): ZoteroItemType {
-  const typeMap: { [key: string]: ZoteroItemType } = {
-    book: "book",
-    chapter: "bookSection",
-    "article-journal": "journalArticle",
-    "article-magazine": "magazineArticle",
-    "article-newspaper": "newspaperArticle",
-    thesis: "thesis",
-    report: "report",
-    manuscript: "manuscript",
-    pamphlet: "document",
-    webpage: "webpage",
-    paper: "conferencePaper",
+export function cslToZoteroItem(csl: CSLItem, libraryID: number): Zotero.Item {
+  const itemType = types[csl.type || ""] || "document";
+  const item = new Zotero.Item(itemType as "book");
+  item.libraryID = libraryID;
+  const unmapped: string[] = [];
+  const set = (field: string, value: unknown) => {
+    if (value === undefined || value === "") return;
+    if (
+      Zotero.ItemFields.isValidForType(
+        Zotero.ItemFields.getID(field),
+        item.itemTypeID,
+      )
+    ) {
+      item.setField(field, String(value));
+    } else unmapped.push(`${field}: ${String(value)}`);
   };
-  return typeMap[cslType] || "book";
-}
-
-/**
- * Convert CSL-JSON item to Zotero item
- */
-async function cslToZoteroItem(csl: CSLItem, libraryID: number): Promise<Zotero.Item | null> {
-  try {
-    const itemType = cslTypeToZotero(csl.type || "book");
-    const item = new Zotero.Item(itemType);
-    item.libraryID = libraryID;
-
-    // Title
-    if (csl.title) {
-      item.setField("title", csl.title);
+  set("title", csl.title);
+  for (const [role, names] of [
+    ["author", csl.author],
+    ["editor", csl.editor],
+  ] as const) {
+    for (const name of names || []) {
+      item.setCreator(item.getCreators().length, {
+        firstName: name.literal ? "" : name.given || "",
+        lastName: name.literal || name.family || "",
+        fieldMode: name.literal ? 1 : 0,
+        creatorType: role,
+      });
     }
-
-    // Authors
-    if (csl.author && Array.isArray(csl.author)) {
-      for (const auth of csl.author) {
-        if (auth.family || auth.given) {
-          item.setCreator(item.getCreators().length, {
-            firstName: auth.given || "",
-            lastName: auth.family || "",
-            creatorType: "author",
-          });
-        }
-      }
-    }
-
-    // Editors
-    if (csl.editor && Array.isArray(csl.editor)) {
-      for (const ed of csl.editor) {
-        if (ed.family || ed.given) {
-          item.setCreator(item.getCreators().length, {
-            firstName: ed.given || "",
-            lastName: ed.family || "",
-            creatorType: "editor",
-          });
-        }
-      }
-    }
-
-    // Date
-    if (csl.issued && csl.issued["date-parts"] && csl.issued["date-parts"][0]) {
-      const dateParts = csl.issued["date-parts"][0];
-      const year = dateParts[0];
-      const month = dateParts[1];
-      const day = dateParts[2];
-
-      let dateStr = year?.toString() || "";
-      if (month) dateStr += `-${month.toString().padStart(2, "0")}`;
-      if (day) dateStr += `-${day.toString().padStart(2, "0")}`;
-
-      if (dateStr) {
-        item.setField("date", dateStr);
-      }
-    }
-
-    // Publisher
-    if (csl.publisher) {
-      item.setField("publisher", csl.publisher);
-    }
-
-    // Place
-    if (csl["publisher-place"]) {
-      item.setField("place", csl["publisher-place"]);
-    }
-
-    // Container title (journal name, book title for chapters)
-    if (csl["container-title"]) {
-      if (itemType === "journalArticle" || itemType === "magazineArticle") {
-        item.setField("publicationTitle", csl["container-title"]);
-      } else if (itemType === "bookSection") {
-        item.setField("bookTitle", csl["container-title"]);
-      }
-    }
-
-    // Volume, Issue, Pages
-    if (csl.volume) {
-      item.setField("volume", csl.volume);
-    }
-    if (csl.issue) {
-      item.setField("issue", csl.issue);
-    }
-    if (csl.page) {
-      item.setField("pages", csl.page);
-    }
-
-    // ISBN
-    if (csl.ISBN) {
-      item.setField("ISBN", csl.ISBN);
-    }
-
-    // DOI
-    if (csl.DOI) {
-      item.setField("DOI", csl.DOI);
-    }
-
-    // URL
-    if (csl.URL) {
-      item.setField("url", csl.URL);
-    }
-
-    // Abstract
-    if (csl.abstract) {
-      item.setField("abstractNote", csl.abstract);
-    }
-
-    // Language
-    if (csl.language) {
-      item.setField("language", csl.language);
-    }
-
-    // Note (add to extra field)
-    if (csl.note) {
-      const extra = item.getField("extra") as string;
-      const newExtra = extra ? `${extra}\n${csl.note}` : csl.note;
-      item.setField("extra", newExtra);
-    }
-
-    return item;
-  } catch (error) {
-    ztoolkit.log(`Error converting CSL to Zotero item: ${error}`);
-    return null;
   }
+  set(
+    "date",
+    csl.issued?.["date-parts"]?.[0]
+      ?.map((part, index) =>
+        index ? String(part).padStart(2, "0") : String(part),
+      )
+      .join("-"),
+  );
+  const containerField =
+    itemType === "bookSection"
+      ? "bookTitle"
+      : itemType === "conferencePaper"
+        ? "proceedingsTitle"
+        : "publicationTitle";
+  for (const [source, target] of Object.entries({
+    publisher: "publisher",
+    "publisher-place": "place",
+    "container-title": containerField,
+    volume: "volume",
+    issue: "issue",
+    page: "pages",
+    ISBN: "ISBN",
+    DOI: "DOI",
+    URL: "url",
+    abstract: "abstractNote",
+    language: "language",
+  }))
+    set(target, csl[source]);
+  item.setField(
+    "extra",
+    ["CUNY AI Lab bibliography import", csl.note, ...unmapped]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  return item;
 }
 
-/**
- * Split bibliography text into individual entries
- */
-function splitEntries(text: string): string[] {
-  // Normalize line endings
-  let normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-
-  // Detect format: if there are blank lines, split on them
-  // Otherwise split on single newlines
-  let entries: string[];
-
-  if (normalized.includes("\n\n")) {
-    // Has blank lines - split on them (Omeka format)
-    entries = normalized.split(/\n\n+/);
-  } else {
-    // No blank lines - each line is an entry
-    entries = normalized.split(/\n/);
-  }
-
-  // Clean up and filter
-  return entries
-    .map((e) => e.trim())
-    .filter((e) => e.length > 10) // Filter out very short entries
-    .filter((e) => !e.match(/^(prev|next|page|home|search|contact)/i)); // Filter navigation
+function itemKeys(item: Zotero.Item): string[] {
+  const creators = item.getCreators();
+  return duplicateKeys({
+    title: String(item.getField("title") || ""),
+    DOI: item.getField("DOI"),
+    ISBN: item.getField("ISBN"),
+    author: creators
+      .filter(
+        (creator) =>
+          creator.creatorTypeID === Zotero.CreatorTypes.getID("author"),
+      )
+      .map((creator) => ({ family: creator.lastName })),
+    editor: creators
+      .filter(
+        (creator) =>
+          creator.creatorTypeID === Zotero.CreatorTypes.getID("editor"),
+      )
+      .map((creator) => ({ family: creator.lastName })),
+    issued: {
+      "date-parts": [
+        [Number(String(item.getField("date")).match(/\b\d{4}\b/)?.[0])],
+      ],
+    },
+  });
 }
 
-// ==================== Dialog Functions ====================
-
-/**
- * Open the bibliography import dialog
- */
 export function openImportDialog(): void {
   if (!isLLMAvailable()) {
     new ztoolkit.ProgressWindow(addon.data.config.addonName)
       .createLine({
-        text: "Please configure OpenRouter API key in preferences first",
+        text: getMissingProviderKeyMessage(),
         type: "fail",
       })
       .show();
     return;
   }
-
-  const dialogArgs = {
-    onLoad: (win: Window) => {
-      state.window = win;
-      state.parsedItems = [];
-      state.failedEntries = [];
-
-      // Set up input listener for entry count
-      const input = win.document.getElementById("bibliography-input") as HTMLTextAreaElement;
-      if (input) {
+  const pane = Zotero.getActiveZoteroPane();
+  const libraryID =
+    pane.getSelectedLibraryID() || Zotero.Libraries.userLibraryID;
+  const collection = pane.getSelectedCollection();
+  const collectionID =
+    collection?.libraryID === libraryID ? collection.id : undefined;
+  const library = Zotero.Libraries.get(libraryID);
+  if (!library) return;
+  // Each window owns its state; destination is captured and cannot drift while reviewing.
+  let win: Window;
+  let entries: ReviewEntry[] = [];
+  let busy = false;
+  let closed = false;
+  const doc = () => win.document;
+  const status = (message: string) => {
+    if (!closed) doc().getElementById("results-text")!.textContent = message;
+  };
+  const setBusy = (value: boolean) => {
+    busy = value;
+    if (closed) return;
+    (
+      doc().getElementById("bibliography-input") as HTMLTextAreaElement
+    ).disabled = value;
+    for (const id of ["parse-button", "import-button"]) {
+      const button = doc().getElementById(id)!;
+      if (
+        value ||
+        (id === "import-button" &&
+          !entries.some(
+            (entry) => !entry.savedID && entry.selected && entry.item,
+          ))
+      )
+        button.setAttribute("disabled", "true");
+      else button.removeAttribute("disabled");
+    }
+    doc()
+      .querySelectorAll<
+        HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+      >("#review-items input, #review-items textarea, #review-items select")
+      .forEach(
+        (
+          element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+        ) => {
+          element.disabled =
+            value ||
+            element.closest("fieldset")?.hasAttribute("data-saved") === true;
+        },
+      );
+  };
+  const html = <K extends keyof HTMLElementTagNameMap>(tag: K) =>
+    doc().createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      tag,
+    ) as HTMLElementTagNameMap[K];
+  const render = () => {
+    if (closed) return;
+    const container = doc().getElementById("review-items")!;
+    container.replaceChildren();
+    entries.forEach((entry, index) => {
+      const box = html("fieldset");
+      box.style.cssText = "margin:12px 0;padding:12px;border:1px solid #888;";
+      if (entry.savedID) box.setAttribute("data-saved", "true");
+      const legend = html("legend");
+      legend.textContent = `Entry ${index + 1}${entry.savedID ? " — imported" : ""}`;
+      box.append(legend);
+      const original = html("p");
+      original.textContent = `Original: ${entry.original}`;
+      original.style.whiteSpace = "pre-wrap";
+      box.append(original);
+      const selectedLabel = html("label");
+      const selected = html("input");
+      selected.type = "checkbox";
+      selected.checked = entry.selected && !entry.savedID;
+      selected.disabled = Boolean(entry.savedID);
+      selected.addEventListener("change", () => {
+        entry.selected = selected.checked;
+        setBusy(false);
+      });
+      selectedLabel.append(
+        selected,
+        doc().createTextNode(" Import this entry"),
+      );
+      box.append(selectedLabel);
+      const warnings = html("p");
+      warnings.setAttribute("role", "status");
+      box.append(warnings);
+      const refreshWarnings = () => {
+        warnings.textContent =
+          entry.error ||
+          (entry.item
+            ? reviewWarnings(entry.item).join(" ")
+            : "Could not parse. Add metadata below to recover this entry.");
+      };
+      const inputField = (
+        label: string,
+        value: string,
+        update: (value: string) => void,
+        multiline = false,
+      ) => {
+        const wrapper = html("label");
+        wrapper.style.cssText = "display:block;margin-top:8px;";
+        wrapper.textContent = label;
+        const input = multiline ? html("textarea") : html("input");
+        input.value = value;
+        input.style.cssText = "display:block;width:100%;box-sizing:border-box;";
+        if (multiline) (input as HTMLTextAreaElement).rows = 3;
         input.addEventListener("input", () => {
-          const entries = splitEntries(input.value);
-          const countLabel = win.document.getElementById("entry-count");
-          if (countLabel) {
-            countLabel.setAttribute("value", `${entries.length} entries detected`);
-          }
+          update(input.value);
+          entry.error = undefined;
+          refreshWarnings();
         });
+        wrapper.append(input);
+        box.append(wrapper);
+      };
+      entry.item ||= { type: "document", title: "" };
+      inputField("Title (required)", entry.item.title || "", (value) => {
+        entry.item!.title = value;
+      });
+      inputField(
+        "Authors (one per line: Family, Given; organization names without a comma)",
+        (entry.item.author || [])
+          .map(
+            (name) =>
+              name.literal ||
+              [name.family, name.given].filter(Boolean).join(", "),
+          )
+          .join("\n"),
+        (value) => {
+          entry.item!.author = value
+            .split("\n")
+            .filter((line) => line.trim())
+            .map((line) => {
+              const comma = line.indexOf(",");
+              return comma < 0
+                ? { literal: line.trim() }
+                : {
+                    family: line.slice(0, comma).trim(),
+                    given: line.slice(comma + 1).trim(),
+                  };
+            });
+        },
+        true,
+      );
+      inputField(
+        "Publication date (YYYY or YYYY-MM-DD)",
+        entry.item.issued?.["date-parts"]?.[0]?.join("-") || "",
+        (value) => {
+          if (value.trim())
+            entry.item!.issued = {
+              "date-parts": [value.split("-").map(Number)],
+            };
+          else delete entry.item!.issued;
+        },
+      );
+      const typeLabel = html("label");
+      typeLabel.textContent = "Item type";
+      typeLabel.style.display = "block";
+      const typeSelect = html("select");
+      for (const type of Object.keys(types)) {
+        const option = html("option");
+        option.value = type;
+        option.textContent = type;
+        typeSelect.append(option);
       }
-
-      // Store args on window for button handlers
-      (win as any).dialogArgs = dialogArgs;
+      typeSelect.value = types[String(entry.item.type)]
+        ? String(entry.item.type)
+        : "document";
+      entry.item.type = typeSelect.value;
+      typeSelect.addEventListener("change", () => {
+        entry.item!.type = typeSelect.value;
+      });
+      typeLabel.append(typeSelect);
+      box.append(typeLabel);
+      for (const [key, label] of Object.entries({
+        publisher: "Publisher",
+        "publisher-place": "Publication place",
+        "container-title": "Journal or book title",
+        ISBN: "ISBN",
+        DOI: "DOI",
+        URL: "URL",
+        volume: "Volume",
+        issue: "Issue",
+        page: "Pages",
+        language: "Language",
+        abstract: "Abstract",
+        note: "Notes",
+      }))
+        inputField(label, String(entry.item[key] || ""), (value) => {
+          entry.item![key] = value;
+        });
+      inputField(
+        "Editors (one per line: Family, Given; organization names without a comma)",
+        (entry.item.editor || [])
+          .map(
+            (name) =>
+              name.literal ||
+              [name.family, name.given].filter(Boolean).join(", "),
+          )
+          .join("\n"),
+        (value) => {
+          entry.item!.editor = value
+            .split("\n")
+            .filter((line) => line.trim())
+            .map((line) => {
+              const comma = line.indexOf(",");
+              return comma < 0
+                ? { literal: line.trim() }
+                : {
+                    family: line.slice(0, comma).trim(),
+                    given: line.slice(comma + 1).trim(),
+                  };
+            });
+        },
+        true,
+      );
+      refreshWarnings();
+      container.append(box);
+    });
+    setBusy(busy);
+  };
+  const args = {
+    onLoad: (window: Window) => {
+      win = window;
+      (win as Window & { dialogArgs?: typeof args }).dialogArgs = args;
+      doc().getElementById("destination")!.textContent =
+        `Destination: ${library.name}${collectionID ? ` / ${collection!.name}` : " (library root)"}. To change destination, close this dialog and select another library or collection.`;
+      const input = doc().getElementById(
+        "bibliography-input",
+      ) as HTMLTextAreaElement;
+      input.addEventListener("input", () => {
+        doc().getElementById("entry-count")!.textContent =
+          `${splitEntries(input.value).length} entries detected. Blank lines separate multiline citations; otherwise each line is an entry.`;
+      });
+      win.addEventListener("unload", () => {
+        closed = true;
+      });
+      if (!library.editable)
+        status(
+          "This library is read-only. Select an editable library before importing.",
+        );
     },
-
     onParse: async () => {
-      if (!state.window) return;
-
-      const win = state.window;
-      const input = win.document.getElementById("bibliography-input") as HTMLTextAreaElement;
-      const parseButton = win.document.getElementById("parse-button") as XULButtonElement;
-      const importButton = win.document.getElementById("import-button") as XULButtonElement;
-      const progressArea = win.document.getElementById("progress-area");
-      const progressLabel = win.document.getElementById("progress-label");
-      const progressMeter = win.document.getElementById("progress-meter") as XULProgressMeterElement;
-      const resultsArea = win.document.getElementById("results-area");
-      const resultsText = win.document.getElementById("results-text");
-
-      const text = input?.value?.trim();
-      if (!text) {
-        new ztoolkit.ProgressWindow(addon.data.config.addonName)
-          .createLine({ text: "Please enter bibliography text", type: "fail" })
-          .show();
+      if (busy || closed) return;
+      const originals = splitEntries(
+        (doc().getElementById("bibliography-input") as HTMLTextAreaElement)
+          .value,
+      );
+      if (!originals.length) {
+        status("Enter at least one citation.");
         return;
       }
-
-      const entries = splitEntries(text);
-      if (entries.length === 0) {
-        new ztoolkit.ProgressWindow(addon.data.config.addonName)
-          .createLine({ text: "No valid entries found", type: "fail" })
-          .show();
+      if (entries.some((entry) => entry.savedID)) {
+        status(
+          "Some entries have already been imported. Open a new import dialog for another bibliography.",
+        );
         return;
       }
-
-      // Disable buttons, show progress
-      parseButton?.setAttribute("disabled", "true");
-      progressArea?.removeAttribute("hidden");
-      resultsArea?.setAttribute("hidden", "true");
-
+      setBusy(true);
       try {
-        const result = await parseBibliographyWithLLM(entries, 25, (current, total) => {
-          const percent = Math.round((current / total) * 100);
-          progressLabel?.setAttribute("value", `Processing ${current}/${total} entries...`);
-          progressMeter?.setAttribute("value", percent.toString());
-        });
-
-        state.parsedItems = result.items;
-        state.failedEntries = result.failed;
-
-        // Show results
-        progressArea?.setAttribute("hidden", "true");
-        resultsArea?.removeAttribute("hidden");
-
-        const successCount = result.items.length;
-        const failCount = result.failed.length;
-        let resultMsg = `Successfully parsed: ${successCount} items\n`;
-        if (failCount > 0) {
-          resultMsg += `Failed to parse: ${failCount} entries\n\n`;
-          resultMsg += `Failed entries:\n${result.failed.slice(0, 5).map((e) => `- ${e.substring(0, 60)}...`).join("\n")}`;
-          if (failCount > 5) {
-            resultMsg += `\n... and ${failCount - 5} more`;
-          }
-        }
-        resultsText?.setAttribute("value", resultMsg);
-        if (resultsText) {
-          resultsText.textContent = resultMsg;
-        }
-
-        // Enable import button if we have items
-        if (successCount > 0) {
-          importButton?.removeAttribute("disabled");
-        }
+        const result = await parseBibliographyWithLLM(
+          originals,
+          25,
+          (current, total) => status(`Parsing ${current}/${total} entries…`),
+        );
+        if (closed) return;
+        entries = result.entries.map((entry) => ({
+          ...entry,
+          selected: Boolean(entry.item),
+        }));
+        render();
+        status(
+          `Review all ${entries.length} entries against the originals. ${result.failed.length} need correction. Only selected entries will be imported.`,
+        );
       } catch (error) {
-        ztoolkit.log(`Parse error: ${error}`);
-        progressArea?.setAttribute("hidden", "true");
-        resultsArea?.removeAttribute("hidden");
-        if (resultsText) {
-          resultsText.textContent = `Error: ${error}`;
-        }
+        status(
+          `Parsing failed: ${String(error)}. Your previous review remains available.`,
+        );
+      } finally {
+        setBusy(false);
       }
-
-      parseButton?.removeAttribute("disabled");
     },
-
     onImport: async () => {
-      if (!state.window || state.parsedItems.length === 0) return;
-
-      const win = state.window;
-      const importButton = win.document.getElementById("import-button") as XULButtonElement;
-      const autoEnrichCheckbox = win.document.getElementById("auto-enrich") as XULCheckboxElement;
-      const resultsText = win.document.getElementById("results-text");
-
-      importButton?.setAttribute("disabled", "true");
-
+      if (busy || closed || !entries.length) return;
+      const targetLibrary = Zotero.Libraries.get(libraryID);
+      if (!targetLibrary || !targetLibrary.editable) {
+        status("The destination library is read-only.");
+        return;
+      }
+      setBusy(true);
+      const created: Zotero.Item[] = [];
+      let skipped = 0;
       try {
-        // Get current library
-        const libraryID = Zotero.Libraries.userLibraryID;
-
-        // Convert and save items
-        const createdItems: Zotero.Item[] = [];
-
-        for (const cslItem of state.parsedItems) {
-          const item = await cslToZoteroItem(cslItem, libraryID);
-          if (item) {
-            await item.saveTx();
-            createdItems.push(item);
+        const existing = await Zotero.Items.getAll(libraryID, true, false);
+        const keys = new Set(
+          existing.filter((item) => item.isRegularItem()).flatMap(itemKeys),
+        );
+        for (const entry of entries) {
+          if (closed) break;
+          if (!entry.selected || entry.savedID) continue;
+          try {
+            const csl = validateEditedItem(entry.item);
+            const candidateKeys = duplicateKeys(csl);
+            if (candidateKeys.some((key) => keys.has(key))) {
+              entry.error =
+                "Possible duplicate in this library or batch; not imported. Check your library before retrying.";
+              entry.selected = false;
+              skipped++;
+              continue;
+            }
+            const item = cslToZoteroItem(csl, libraryID);
+            if (collectionID) item.addToCollection(collectionID);
+            await Zotero.DB.executeTransaction(async () => {
+              await item.save();
+              const note = new Zotero.Item("note");
+              note.libraryID = libraryID;
+              note.parentID = item.id;
+              note.setNote(
+                `<h2>CUNY AI Lab bibliography import</h2><p>AI output reviewed and imported by the user. Model: ${escapeHTML(entry.model || "unknown")}. Imported: ${new Date().toISOString()}.</p><h3>Original citation</h3><pre>${escapeHTML(entry.original)}</pre><h3>Reviewed metadata (CSL-JSON)</h3><pre>${escapeHTML(JSON.stringify(csl, null, 2))}</pre>`,
+              );
+              await note.save();
+            });
+            entry.savedID = item.id;
+            entry.selected = false;
+            entry.error = undefined;
+            candidateKeys.forEach((key) => keys.add(key));
+            created.push(item);
+          } catch (error) {
+            entry.error = `Not imported: ${String(error)}. Correct this entry and retry.`;
           }
         }
-
-        // Auto-enrich if checked
-        const shouldEnrich = autoEnrichCheckbox?.checked;
-        if (shouldEnrich && createdItems.length > 0) {
-          if (resultsText) {
-            resultsText.textContent = `Imported ${createdItems.length} items. Enriching metadata...`;
-          }
-
-          const stats = await enrichItems(createdItems);
-
-          if (resultsText) {
-            resultsText.textContent = `Done! Imported ${createdItems.length} items.\nEnriched: ${stats.found}, Not found: ${stats.notFound}`;
-          }
-        } else {
-          if (resultsText) {
-            resultsText.textContent = `Done! Imported ${createdItems.length} items.`;
-          }
-        }
-
-        new ztoolkit.ProgressWindow(addon.data.config.addonName)
-          .createLine({
-            text: `Imported ${createdItems.length} items`,
-            type: "success",
-          })
-          .show();
-
-        // Clear state
-        state.parsedItems = [];
+        render();
+        status(
+          `Imported ${created.length} items this time; ${entries.filter((entry) => entry.savedID).length} total. ${skipped} possible duplicates skipped. Failed entries remain available for correction; saved entries cannot be imported again.`,
+        );
+        if (
+          !closed &&
+          (doc().getElementById("auto-enrich") as HTMLInputElement).checked &&
+          created.length
+        )
+          await enrichItems(created);
       } catch (error) {
-        ztoolkit.log(`Import error: ${error}`);
-        if (resultsText) {
-          resultsText.textContent = `Import error: ${error}`;
-        }
-        importButton?.removeAttribute("disabled");
+        status(
+          `Import failed: ${String(error)}. Previously saved entries remain marked as imported.`,
+        );
+      } finally {
+        setBusy(false);
       }
     },
   };
-
-  // Open dialog
-  const mainWindow = Zotero.getMainWindow();
-  mainWindow.openDialog(
+  Zotero.getMainWindow().openDialog(
     `chrome://${addon.data.config.addonRef}/content/importDialog.xhtml`,
-    "zotero-metadata-assistant-import",
+    "",
     "chrome,dialog,centerscreen,resizable",
-    dialogArgs,
+    args,
   );
 }
 

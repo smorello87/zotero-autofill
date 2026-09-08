@@ -6,20 +6,66 @@
 >
   <label><html:h2 data-l10n-id="pref-title"></html:h2></label>
 
-  <!-- API Key -->
+  <description>A CUNY AI Lab tool</description>
+  <hbox align="center">
+    <html:label
+      for="zotero-prefpane-__addonRef__-provider"
+      data-l10n-id="pref-provider-label"
+    ></html:label>
+    <menulist
+      id="zotero-prefpane-__addonRef__-provider"
+      preference="aiProvider"
+      style="width: 300px"
+    >
+      <menupopup>
+        <menuitem label="CUNY AI Lab Gateway (Recommended)" value="cail" />
+        <menuitem label="OpenRouter" value="openrouter" />
+      </menupopup>
+    </menulist>
+  </hbox>
+  <description id="metadata-privacy"
+    >Book and article title, author, year, ISBN, or DOI are sent to Open
+    Library, Google Books, or Crossref during lookup. When a provider key is
+    configured, bibliography text and matching queries/results are sent to the
+    selected DeepSeek model through the provider. Requests use your account or
+    CUNY allocation. Provider data policies apply.</description
+  >
+  <!-- CUNY API Key -->
+  <hbox align="center">
+    <html:label
+      for="zotero-prefpane-__addonRef__-cail-apikey"
+      data-l10n-id="pref-cail-key-label"
+    ></html:label>
+    <html:input
+      type="password"
+      id="zotero-prefpane-__addonRef__-cail-apikey"
+      preference="cailApiKey"
+      style="width: 300px"
+    ></html:input>
+  </hbox>
+  <description style="margin-left: 20px; color: gray">
+    <html:span data-l10n-id="pref-cail-key-description"></html:span>
+    <html:a href="https://ailab.gc.cuny.edu/docs/api-keys/" target="_blank"
+      >Get a CUNY AI Lab key</html:a
+    >
+  </description>
+  <!-- OpenRouter API Key -->
   <hbox align="center">
     <html:label
       for="zotero-prefpane-__addonRef__-apikey"
-      data-l10n-id="pref-api-key-label"
+      data-l10n-id="pref-openrouter-key-label"
     ></html:label>
     <html:input
       type="password"
       id="zotero-prefpane-__addonRef__-apikey"
       preference="openrouterApiKey"
-      style="width: 300px;"
+      style="width: 300px"
     ></html:input>
   </hbox>
-  <description data-l10n-id="pref-api-key-description" style="margin-left: 20px; color: gray;"></description>
+  <description
+    data-l10n-id="pref-openrouter-key-description"
+    style="margin-left: 20px; color: gray"
+  ></description>
 
   <!-- Auto-enrich on import -->
   <checkbox
@@ -41,12 +87,20 @@
       for="zotero-prefpane-__addonRef__-llmmodel"
       data-l10n-id="pref-llm-model-label"
     ></html:label>
-    <menulist id="zotero-prefpane-__addonRef__-llmmodel" preference="llmModel" style="width: 250px;">
+    <menulist
+      id="zotero-prefpane-__addonRef__-llmmodel"
+      preference="llmModel"
+      style="width: 250px"
+    >
       <menupopup>
-        <menuitem label="GPT-4o Mini (Recommended)" value="openai/gpt-4o-mini" />
-        <menuitem label="GPT-4o" value="openai/gpt-4o" />
-        <menuitem label="Claude Sonnet 4.5" value="anthropic/claude-sonnet-4.5" />
-        <menuitem label="Gemini 2.5 Flash" value="google/gemini-2.5-flash" />
+        <menuitem
+          label="DeepSeek V4 Flash — lower cost (Recommended)"
+          value="deepseek/deepseek-v4-flash"
+        />
+        <menuitem
+          label="DeepSeek V4 Pro — higher quality"
+          value="deepseek/deepseek-v4-pro"
+        />
       </menupopup>
     </menulist>
   </hbox>
@@ -61,17 +115,16 @@
       type="number"
       id="zotero-prefpane-__addonRef__-apidelay"
       preference="apiDelayMs"
-      min="100"
-      max="2000"
-      style="width: 80px;"
+      min="1100"
+      max="10000"
+      style="width: 80px"
     ></html:input>
   </hbox>
-
 </groupbox>
 <vbox>
   <html:label
     data-l10n-id="pref-help"
     data-l10n-args='{"name": "__addonName__","version":"__buildVersion__"}'
-    style="color: gray; font-size: 11px;"
+    style="color: gray; font-size: 11px"
   ></html:label>
 </vbox>

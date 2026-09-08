@@ -8,6 +8,8 @@ declare namespace _ZoteroTypes {
   interface Prefs {
     PluginPrefsMap: {
       "openrouterApiKey": string;
+      "cailApiKey": string;
+      "aiProvider": string;
       "autoEnrichOnImport": boolean;
       "llmModel": string;
       "enrichPreIsbn": boolean;

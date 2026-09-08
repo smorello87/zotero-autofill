@@ -1,4 +1,5 @@
-import { EnrichmentFactory } from "./modules/enrichment";
+import { undoSelectedEnrichment } from "./modules/enrichmentReview";
+import { EnrichmentFactory, isEnrichableItem } from "./modules/enrichment";
 import { BibliographyImportFactory } from "./modules/bibliographyImport";
 import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
@@ -45,6 +46,7 @@ async function onMainWindowUnload(_win: Window): Promise<void> {
 }
 
 function onShutdown(): void {
+  unregisterNotifier();
   ztoolkit.unregisterAll();
   addon.data.alive = false;
   // @ts-expect-error - Plugin instance is not typed
@@ -81,11 +83,15 @@ function registerNotifier() {
       if (event === "add" && type === "item") {
         const autoEnrich = Zotero.Prefs.get(
           `${addon.data.config.prefsPrefix}.autoEnrichOnImport`,
+          true,
         );
         if (autoEnrich) {
           // Delay to let item settle
           await Zotero.Promise.delay(1000);
-          onItemsAdded(ids as number[]);
+          if (addon.data.alive)
+            await onItemsAdded(ids as number[]).catch((error) =>
+              ztoolkit.log(error),
+            );
         }
       }
     },
@@ -121,6 +127,13 @@ function registerContextMenu() {
 }
 
 function registerToolsMenu() {
+  ztoolkit.Menu.register("menuTools", {
+    tag: "menuitem",
+    label: "Undo Metadata Changes…",
+    commandListener: () => {
+      void undoSelectedEnrichment();
+    },
+  });
   // Tools menu: "Import Bibliography Text..."
   ztoolkit.Menu.register("menuTools", {
     tag: "menuitem",
@@ -136,21 +149,28 @@ function registerToolsMenu() {
 
 async function onItemsAdded(ids: number[]) {
   const items = await Zotero.Items.getAsync(ids);
-  const books = items.filter((item) => item.isRegularItem() && item.itemType === "book");
+  const enrichable = items.filter(
+    (item) =>
+      item.isRegularItem() &&
+      isEnrichableItem(item) &&
+      !String(item.getField("extra")).includes(
+        "CUNY AI Lab bibliography import",
+      ),
+  );
 
-  if (books.length === 0) return;
+  if (enrichable.length === 0) return;
 
-  ztoolkit.log(`Auto-enriching ${books.length} new book(s)...`);
+  ztoolkit.log(`Auto-enriching ${enrichable.length} new item(s)...`);
 
   // Import dynamically to avoid circular dependency
   const { enrichItems } = await import("./modules/enrichment");
 
-  const stats = await enrichItems(books);
+  const stats = await enrichItems(enrichable);
 
   if (stats.found > 0) {
     new ztoolkit.ProgressWindow(addon.data.config.addonName)
       .createLine({
-        text: `Auto-enriched ${stats.found} book(s)`,
+        text: `${stats.found} item(s) have metadata suggestions to review`,
         type: "success",
       })
       .show();

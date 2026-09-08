@@ -40,7 +40,7 @@ test("invalid history is ignored and edited fields never overwritten", () => {
       ]),
     },
     { id: 2, record: { date: 42 } },
-    { id: 3, record: record([change("title", "Original", "Injected")]) },
+    { id: 3, record: record([change("bogus", "Original", "Injected")]) },
   ];
   const result = review.pendingUndo(
     item({ publisher: "Human edit", date: "2000", title: "Injected" }),
@@ -204,6 +204,26 @@ test("review proposes fuller titles and author names", () => {
         "Gimme Gimme This... Gimme Gimme That: Annihilation and Innovation in the Punk Rock Commons",
     },
   ]);
+});
+
+test("title changes pass history validation and save", async () => {
+  const values = { title: "Short title" };
+  const target = {
+    ...item(values),
+    id: 8,
+    libraryID: 1,
+    setField: (field, value) => {
+      values[field] = value;
+    },
+    save: async () => {},
+  };
+  globalThis.Zotero.DB = { executeTransaction: async (cb) => cb() };
+  await review.saveReviewedChanges(
+    target,
+    [{ field: "title", before: "Short title", after: "Full title" }],
+    "Crossref",
+  );
+  assert.equal(values.title, "Full title");
 });
 
 test("multi-author history can be undone after saving", () => {

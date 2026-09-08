@@ -497,6 +497,7 @@ interface HistoryRecord {
   undoOf?: number;
 }
 const historyFields = new Set([
+  "title",
   "DOI",
   "ISBN",
   "author",

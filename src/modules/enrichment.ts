@@ -6,6 +6,7 @@
 
 import { getPref } from "../utils/prefs";
 import { isLLMAvailable, llmCleanupQuery, llmDisambiguate } from "./llmClient";
+import { openEnrichmentReview } from "./enrichmentReview";
 
 // ==================== Types ====================
 
@@ -63,6 +64,7 @@ export interface EnrichmentStats {
   preIsbn: number;
   skipped: number;
   proposals: EnrichmentProposal[];
+  errors: string[];
 }
 
 interface EnrichmentOptions {
@@ -766,6 +768,7 @@ export async function enrichItems(
     preIsbn: 0,
     skipped: 0,
     proposals: [],
+    errors: [],
   };
   for (const [index, item] of items.entries()) {
     if (!isEnrichableItem(item) || pending.has(item.id)) {
@@ -786,14 +789,15 @@ export async function enrichItems(
       } else stats.notFound++;
     } catch (error) {
       stats.notFound++;
-      ztoolkit.log(`Metadata lookup failed: ${error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      stats.errors.push(`${String(item.getField("title"))}: ${message}`);
+      ztoolkit.log(`Metadata lookup failed: ${message}`);
     } finally {
       pending.delete(item.id);
     }
     await sleep(Math.max(1100, Number(getPref("apiDelayMs")) || 1100));
   }
   if (stats.proposals.length && options.openReview !== false) {
-    const { openEnrichmentReview } = await import("./enrichmentReview");
     openEnrichmentReview(stats.proposals);
   }
   return stats;
@@ -812,11 +816,25 @@ export class EnrichmentFactory {
         popup.close();
         popupClosed = true;
         await sleep(0);
-        const { openEnrichmentReview } = await import("./enrichmentReview");
         openEnrichmentReview(stats.proposals);
       } else {
         popup.changeLine({
-          text: `${stats.notFound} unresolved; ${stats.skipped} skipped`,
+          text: stats.errors.length
+            ? `No suggestions: ${stats.errors[0]}`
+            : `${stats.notFound} unresolved; ${stats.skipped} skipped`,
+          progress: 100,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ztoolkit.log(`Metadata review failed: ${message}`);
+      if (popupClosed) {
+        new ztoolkit.ProgressWindow(addon.data.config.addonName)
+          .createLine({ text: `Metadata review failed: ${message}` })
+          .show();
+      } else {
+        popup.changeLine({
+          text: `Metadata review failed: ${message}`,
           progress: 100,
         });
       }

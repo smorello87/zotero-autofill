@@ -171,6 +171,41 @@ test("review keeps structured coauthors in the proposed creator list", () => {
   ]);
 });
 
+test("review proposes fuller titles and author names", () => {
+  globalThis.Zotero.CreatorTypes = { getID: () => 1 };
+  const target = {
+    ...item({ title: "Gimme gimme this Gimme gimme that" }),
+    getCreators: () => [{ creatorTypeID: 1, fieldMode: 1, lastName: "Munoz" }],
+  };
+  const changes = review.proposedChanges(target, {
+    title:
+      "Gimme Gimme This... Gimme Gimme That: Annihilation and Innovation in the Punk Rock Commons",
+    author: "José Esteban Muñoz",
+    authors: [{ given: "José Esteban", family: "Muñoz" }],
+  });
+  assert.deepEqual(changes, [
+    {
+      field: "author",
+      before: "Munoz",
+      after: "José Esteban Muñoz",
+      creatorsBefore: [{ name: "Munoz", creatorType: "author" }],
+      creatorsAfter: [
+        {
+          firstName: "José Esteban",
+          lastName: "Muñoz",
+          creatorType: "author",
+        },
+      ],
+    },
+    {
+      field: "title",
+      before: "Gimme gimme this Gimme gimme that",
+      after:
+        "Gimme Gimme This... Gimme Gimme That: Annihilation and Innovation in the Punk Rock Commons",
+    },
+  ]);
+});
+
 test("multi-author history can be undone after saving", () => {
   globalThis.Zotero.CreatorTypes = { getID: () => 1 };
   const target = {

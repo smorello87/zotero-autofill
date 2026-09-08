@@ -18,8 +18,10 @@ export interface EnrichmentAuthor {
 
 export interface EnrichmentResult {
   source?: string;
+  title?: string;
   author?: string;
   authors?: EnrichmentAuthor[];
+  candidates?: APICandidate[];
   ISBN?: string;
   DOI?: string;
   OCLC?: string;
@@ -231,6 +233,7 @@ async function fetchOpenLibraryEdition(
       return null;
     const result: EnrichmentResult = {};
 
+    result.title = data.title;
     result.ISBN = isbn;
     result.source = url;
     const authors = await resolveOpenLibraryAuthors(data.authors);
@@ -349,6 +352,7 @@ export async function searchOpenLibrary(
             name,
           }));
           const result: EnrichmentResult = {
+            title: data.title || edition.title || doc.title,
             author: doc.author_name?.[0],
             authors,
             ISBN: data.isbn_13?.[0] || data.isbn_10?.[0] || isbn,
@@ -388,6 +392,9 @@ export async function searchOpenLibrary(
  */
 function parseGoogleBooksVolume(volumeInfo: any): EnrichmentResult {
   const result: EnrichmentResult = {};
+
+  if (typeof volumeInfo.title === "string" && volumeInfo.title.trim())
+    result.title = volumeInfo.title.trim();
 
   // Get ISBNs from industryIdentifiers
   const identifiers = volumeInfo.industryIdentifiers || [];
@@ -533,6 +540,7 @@ function parseCrossrefWork(work: any): EnrichmentResult {
     : [];
   const doi = typeof work?.DOI === "string" ? work.DOI : undefined;
   const result: EnrichmentResult = {
+    title: Array.isArray(work?.title) ? work.title[0] : undefined,
     source:
       typeof work?.URL === "string"
         ? work.URL
@@ -651,7 +659,10 @@ export async function selectBestCandidate(
   author: string,
   year: number | null,
   candidates: APICandidate[],
-  options: { allowArticleYearMismatch?: boolean } = {},
+  options: {
+    allowArticleYearMismatch?: boolean;
+    returnAmbiguous?: boolean;
+  } = {},
 ): Promise<EnrichmentResult | null> {
   const normalizedTitle = normalize(title);
   const identityMatches = candidates.filter(
@@ -676,10 +687,22 @@ export async function selectBestCandidate(
     identityMatches.length === 1
   )
     return addCandidateAuthor(identityMatches[0]);
-  if (!suitable.length || !isLLMAvailable()) return null;
+  if (options.returnAmbiguous && suitable.length > 1)
+    return { candidates: suitable };
+  if (!suitable.length || !isLLMAvailable()) {
+    if (options.returnAmbiguous && suitable.length > 1)
+      return { candidates: suitable };
+    if (
+      options.returnAmbiguous &&
+      options.allowArticleYearMismatch &&
+      identityMatches.length > 1
+    )
+      return { candidates: identityMatches };
+    return null;
+  }
   const choice = await llmDisambiguate(title, author, year, suitable);
   if (!choice || choice.selectedIndex === null || choice.confidence < 0.9)
-    return null;
+    return options.returnAmbiguous ? { candidates: suitable } : null;
   const selected = suitable[choice.selectedIndex];
   return selected ? addCandidateAuthor(selected) : null;
 }
@@ -701,7 +724,7 @@ export async function lookupItem(
       author,
       year,
       crossref.candidates,
-      { allowArticleYearMismatch: true },
+      { allowArticleYearMismatch: true, returnAmbiguous: true },
     );
     if (!result && isLLMAvailable()) {
       const cleaned = await llmCleanupQuery(title, author);
@@ -712,7 +735,7 @@ export async function lookupItem(
           cleaned.author,
           year,
           retry.candidates,
-          { allowArticleYearMismatch: true },
+          { allowArticleYearMismatch: true, returnAmbiguous: true },
         );
       }
     }
@@ -732,11 +755,17 @@ export async function lookupItem(
   const author = getFirstAuthor(item);
   const year = getYearFromItem(item);
   const open = await searchOpenLibrary(title, author, year);
-  let result = await selectBestCandidate(title, author, year, open.candidates);
+  let result = await selectBestCandidate(title, author, year, open.candidates, {
+    returnAmbiguous: true,
+  });
+  if (result?.candidates?.length) return result;
   if (!result) {
     await sleep(1100);
     const google = await searchGoogleBooks(title, author);
-    result = await selectBestCandidate(title, author, year, google.candidates);
+    result = await selectBestCandidate(title, author, year, google.candidates, {
+      returnAmbiguous: true,
+    });
+    if (result?.candidates?.length) return result;
   }
   if (!result && isLLMAvailable()) {
     const cleaned = await llmCleanupQuery(title, author);
@@ -752,6 +781,7 @@ export async function lookupItem(
         cleaned.author,
         year,
         retry.candidates,
+        { returnAmbiguous: true },
       );
     }
   }

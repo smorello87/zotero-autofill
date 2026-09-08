@@ -21,6 +21,31 @@ test("ambiguous search results do not become automatic metadata", async () => {
     null,
   );
 });
+
+test("ambiguous matches can be returned for manual selection", async () => {
+  const candidates = [
+    {
+      title: "Book",
+      author: "Smith",
+      year: "2001",
+      result: { title: "Book", publisher: "Press A" },
+    },
+    {
+      title: "Book",
+      author: "Smith",
+      year: "2001",
+      result: { title: "Book", publisher: "Press B" },
+    },
+  ];
+  const result = await mod.selectBestCandidate(
+    "Book",
+    "Smith",
+    2001,
+    candidates,
+    { returnAmbiguous: true },
+  );
+  assert.deepEqual(result.candidates, candidates);
+});
 test("matching requires exact edition year", async () => {
   const candidates = [
     {

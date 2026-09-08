@@ -1,4 +1,8 @@
-import type { EnrichmentAuthor, EnrichmentResult } from "./enrichment";
+import type {
+  APICandidate,
+  EnrichmentAuthor,
+  EnrichmentResult,
+} from "./enrichment";
 
 export interface CreatorChange {
   firstName?: string;
@@ -80,6 +84,41 @@ function creatorChange(author: EnrichmentAuthor): CreatorChange {
 function creatorDisplay(change: CreatorChange): string {
   if (change.name) return change.name;
   return [change.firstName, change.lastName].filter(Boolean).join(" ");
+}
+
+function normalizeForMatch(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function creatorChangesForItem(item: Zotero.Item): CreatorChange[] {
+  return item
+    .getCreators()
+    .filter((creator) => creator.creatorTypeID === getAuthorTypeID())
+    .map((creator) =>
+      creator.fieldMode === 1
+        ? { name: creator.lastName, creatorType: "author" }
+        : {
+            firstName: creator.firstName || "",
+            lastName: creator.lastName || "",
+            creatorType: "author",
+          },
+    );
+}
+
+function isExpandedValue(current: string, proposed: string): boolean {
+  const normalizedCurrent = normalizeForMatch(current);
+  const normalizedProposed = normalizeForMatch(proposed);
+  return Boolean(
+    normalizedCurrent &&
+      normalizedProposed &&
+      normalizedCurrent !== normalizedProposed &&
+      normalizedProposed.includes(normalizedCurrent),
+  );
 }
 
 function applyAuthorValue(
@@ -179,6 +218,7 @@ export function proposedChanges(
   result: EnrichmentResult,
 ): FieldChange[] {
   const values: Record<string, string | number | undefined> = {
+    title: result.title,
     DOI: result.DOI,
     ISBN: result.ISBN,
     publicationTitle: result.containerTitle,
@@ -192,7 +232,11 @@ export function proposedChanges(
     abstractNote: result.abstractNote,
   };
   const changes: FieldChange[] = [];
-  if (!getAuthorValue(item) && result.author) {
+  const currentAuthor = getAuthorValue(item);
+  if (
+    result.author &&
+    (!currentAuthor || isExpandedValue(currentAuthor, result.author))
+  ) {
     const creatorsAfter = result.authors?.length
       ? result.authors.map(creatorChange)
       : [parseDisplayAuthor(result.author)];
@@ -202,16 +246,20 @@ export function proposedChanges(
       .join("; ");
     changes.push({
       field: "author",
-      before: "",
+      before: currentAuthor,
       after: authorAfter || result.author,
-      creatorsBefore: [],
+      creatorsBefore: creatorChangesForItem(item),
       creatorsAfter,
     });
   }
   for (const [field, value] of Object.entries(values)) {
     if (!resolveField(item, field)) continue;
     const before = getCurrentValue(item, field);
-    if (!before && value) changes.push({ field, before, after: String(value) });
+    if (
+      value &&
+      (!before || (field === "title" && isExpandedValue(before, String(value))))
+    )
+      changes.push({ field, before, after: String(value) });
   }
   const extra = String(item.getField("extra") || "");
   const identifiers = [
@@ -286,6 +334,7 @@ interface ReviewRow {
   changes: FieldChange[];
   source: string;
   undoOf?: number;
+  candidates?: APICandidate[];
 }
 function openReview(rows: ReviewRow[], title: string): void {
   const args = {
@@ -294,11 +343,6 @@ function openReview(rows: ReviewRow[], title: string): void {
       doc.title = title;
       const container = doc.getElementById("review-rows")!;
       const status = doc.getElementById("review-status")!;
-      const selections: Array<{
-        row: ReviewRow;
-        inputs: HTMLInputElement[];
-        button: HTMLButtonElement;
-      }> = [];
       const create = (tag: string, text?: string) => {
         const el = doc.createElementNS(
           "http://www.w3.org/1999/xhtml",
@@ -310,36 +354,84 @@ function openReview(rows: ReviewRow[], title: string): void {
       for (const row of rows) {
         const section = create("fieldset");
         section.append(create("legend", String(row.item.getField("title"))));
-        if (/^https:\/\//.test(row.source)) {
-          const link = create("a", "View metadata source") as HTMLAnchorElement;
-          link.href = row.source;
-          link.addEventListener("click", (e) => {
-            e.preventDefault();
-            Zotero.launchURL(row.source);
-          });
-          section.append(link);
-        }
-        const inputs: HTMLInputElement[] = [];
-        for (const change of row.changes) {
-          const label = create("label");
-          label.style.display = "block";
-          const input = create("input") as HTMLInputElement;
-          input.type = "checkbox";
-          input.checked = true;
-          label.append(
-            input,
-            doc.createTextNode(
-              ` ${change.field}: ${change.before || "(empty)"} → ${change.after || "(empty)"}`,
-            ),
+        const sourceContainer = create("div");
+        section.append(sourceContainer);
+        let inputs: HTMLInputElement[] = [];
+        const changesContainer = create("div");
+        section.append(changesContainer);
+        const candidatePicker = row.candidates?.length
+          ? (create("select") as HTMLSelectElement)
+          : null;
+        if (candidatePicker) {
+          const label = create(
+            "label",
+            "Multiple matches found — choose one: ",
           );
-          section.append(label);
-          inputs.push(input);
+          for (const [index, candidate] of row.candidates!.entries()) {
+            const option = create("option") as HTMLOptionElement;
+            const result = candidate.result;
+            option.value = String(index);
+            option.textContent = [
+              candidate.title || result.title,
+              candidate.author || result.author,
+              candidate.year,
+            ]
+              .filter(Boolean)
+              .join(" — ");
+            candidatePicker.append(option);
+          }
+          label.append(candidatePicker);
+          section.insertBefore(label, sourceContainer);
         }
         const button = create(
           "button",
           row.undoOf ? "Undo selected changes" : "Save selected changes",
         ) as HTMLButtonElement;
-        button.disabled = !inputs.length;
+
+        const render = (candidate?: APICandidate) => {
+          if (candidate) {
+            row.changes = proposedChanges(row.item, candidate.result);
+            row.source = candidate.result.source || "Unknown source";
+          }
+          while (sourceContainer.firstChild)
+            sourceContainer.removeChild(sourceContainer.firstChild);
+          if (/^https:\/\//.test(row.source)) {
+            const link = create(
+              "a",
+              "View metadata source",
+            ) as HTMLAnchorElement;
+            link.href = row.source;
+            link.addEventListener("click", (e) => {
+              e.preventDefault();
+              Zotero.launchURL(row.source);
+            });
+            sourceContainer.append(link);
+          }
+          while (changesContainer.firstChild)
+            changesContainer.removeChild(changesContainer.firstChild);
+          inputs = [];
+          for (const change of row.changes) {
+            const label = create("label");
+            label.style.display = "block";
+            const input = create("input") as HTMLInputElement;
+            input.type = "checkbox";
+            input.checked = true;
+            label.append(
+              input,
+              doc.createTextNode(
+                ` ${change.field}: ${change.before || "(empty)"} → ${change.after || "(empty)"}`,
+              ),
+            );
+            changesContainer.append(label);
+            inputs.push(input);
+          }
+          button.disabled = !inputs.length;
+        };
+        candidatePicker?.addEventListener("change", () => {
+          const candidate = row.candidates?.[Number(candidatePicker.value)];
+          if (candidate) render(candidate);
+        });
+        render(row.candidates?.[0]);
         button.addEventListener("click", async () => {
           button.disabled = true;
           try {
@@ -358,7 +450,7 @@ function openReview(rows: ReviewRow[], title: string): void {
             inputs.forEach((i) => (i.disabled = true));
             button.textContent = changes.length ? "Saved" : "Nothing selected";
             status.textContent =
-              "Changes saved. A history note is attached to the item.";
+              "Changes saved. Undo history is stored privately.";
           } catch (error) {
             status.textContent = String(error);
             button.disabled = false;
@@ -366,7 +458,6 @@ function openReview(rows: ReviewRow[], title: string): void {
         });
         section.append(button);
         container.append(section);
-        selections.push({ row, inputs, button });
       }
       if (!rows.length)
         status.textContent =
@@ -390,6 +481,7 @@ export function openEnrichmentReview(
       item,
       changes: proposedChanges(item, result),
       source: result.source || "Unknown source",
+      candidates: result.candidates?.length ? result.candidates : undefined,
     })),
     "Review metadata — CUNY AI Lab",
   );

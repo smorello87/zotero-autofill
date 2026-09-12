@@ -6,7 +6,7 @@ The assistant proposes catalogue metadata for your review. Optional AI helps par
 
 ## Install
 
-Download an `.xpi` from [Releases](https://github.com/smorello87/zotero-autofill/releases). In Zotero, open **Tools → Plugins** (or **Add-ons**), select the gear menu, then **Install Add-on From File**. Select the XPI and restart if prompted.
+Download an `.xpi` from [Releases](https://github.com/CUNY-AI-Lab/zotero-autofill/releases). In Zotero, open **Tools → Plugins** (or **Add-ons**), select the gear menu, then **Install Add-on From File**. Select the XPI and restart if prompted.
 
 This development version targets Zotero 7 through Zotero 9.0.x. Zotero 9 did not introduce major plugin API changes, and the manifest now declares `strict_max_version: 9.0.*`. Changes in this checkout are not published releases.
 
@@ -83,6 +83,6 @@ Before a release, test installation, settings persistence, catalogue lookup with
 
 ## Maintenance and support
 
-Developed by Stefano Morello; presented as a CUNY AI Lab tool. Report reproducible problems through [GitHub Issues](https://github.com/smorello87/zotero-autofill/issues), including plugin/Zotero versions and an anonymized example. Do not post API keys or private bibliography text. Release artifacts and version history are maintained through [GitHub Releases](https://github.com/smorello87/zotero-autofill/releases).
+A CUNY AI Lab project, developed by Stefano Morello. Report reproducible problems through [GitHub Issues](https://github.com/CUNY-AI-Lab/zotero-autofill/issues), including plugin/Zotero versions and an anonymized example. Do not post API keys or private bibliography text. Release artifacts and version history are maintained through [GitHub Releases](https://github.com/CUNY-AI-Lab/zotero-autofill/releases).
 
 Built with [zotero-plugin-template](https://github.com/windingwind/zotero-plugin-template). Licensed GPL-3.0-or-later. Catalogue data comes from [Open Library](https://openlibrary.org/) and [Google Books](https://books.google.com/); model access uses the selected [CUNY AI Lab Gateway](https://github.com/CUNY-AI-Lab/cail-gateway) or [OpenRouter](https://openrouter.ai/).

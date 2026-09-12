@@ -12,13 +12,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/smorello87/zotero-autofill.git"
+    "url": "git+https://github.com/CUNY-AI-Lab/zotero-autofill.git"
   },
   "author": "Stefano Morello",
   "bugs": {
-    "url": "https://github.com/smorello87/zotero-autofill/issues"
+    "url": "https://github.com/CUNY-AI-Lab/zotero-autofill/issues"
   },
-  "homepage": "https://github.com/smorello87/zotero-autofill#readme",
+  "homepage": "https://github.com/CUNY-AI-Lab/zotero-autofill#readme",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",

@@ -578,7 +578,7 @@ async function fetchCrossrefWork(
     const response = await Zotero.HTTP.request("GET", url, {
       headers: {
         "User-Agent":
-          "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+          "Zotero Metadata Assistant/1.0 (https://github.com/CUNY-AI-Lab/zotero-autofill)",
       },
       timeout: 10000,
       responseType: "json",
@@ -617,7 +617,7 @@ async function fetchSemanticScholarTitle(
       const response = await Zotero.HTTP.request("GET", url, {
         headers: {
           "User-Agent":
-            "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+            "Zotero Metadata Assistant/1.0 (https://github.com/CUNY-AI-Lab/zotero-autofill)",
         },
         timeout: 10000,
         responseType: "json",
@@ -639,7 +639,7 @@ async function fetchSemanticScholarTitle(
     const response = await Zotero.HTTP.request("GET", searchURL, {
       headers: {
         "User-Agent":
-          "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+          "Zotero Metadata Assistant/1.0 (https://github.com/CUNY-AI-Lab/zotero-autofill)",
       },
       timeout: 10000,
       responseType: "json",
@@ -680,7 +680,7 @@ export async function searchCrossref(
     const response = await Zotero.HTTP.request("GET", url, {
       headers: {
         "User-Agent":
-          "Zotero Metadata Assistant/1.0 (https://github.com/smorello87/zotero-autofill)",
+          "Zotero Metadata Assistant/1.0 (https://github.com/CUNY-AI-Lab/zotero-autofill)",
       },
       timeout: 10000,
       responseType: "json",

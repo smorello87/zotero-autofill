@@ -5,7 +5,7 @@ pref("extensions.zotero.metadata-assistant.aiProvider", "cail");
 pref("extensions.zotero.metadata-assistant.autoEnrichOnImport", false);
 pref(
   "extensions.zotero.metadata-assistant.llmModel",
-  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4.1-flash",
 );
 pref("extensions.zotero.metadata-assistant.enrichPreIsbn", true);
 pref("extensions.zotero.metadata-assistant.apiDelayMs", 1100);

@@ -90,7 +90,7 @@ globalThis.Zotero = {
     get(key) {
       return key.endsWith("openrouterApiKey")
         ? "key"
-        : "deepseek/deepseek-v4-flash";
+        : "deepseek/deepseek-v4.1-flash";
     },
   },
   getActiveZoteroPane() {
@@ -169,7 +169,7 @@ test("dialog saves destination and provenance; retry does not duplicate committe
   assert.equal(items[0].libraryID, 42);
   assert.equal(items[0].collectionID, 7);
   assert.match(items[1].note, /&lt;original first&gt;/);
-  assert.match(items[1].note, /deepseek\/deepseek-v4-flash/);
+  assert.match(items[1].note, /deepseek\/deepseek-v4.1-flash/);
   failSecond = false;
   await args.onImport();
   await args.onImport();

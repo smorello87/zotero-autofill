@@ -88,13 +88,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 export const OPEN_WEIGHT_MODELS = [
-  "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4.1-flash",
   "deepseek/deepseek-v4-pro",
 ] as const;
 export const DEFAULT_LLM_MODEL = OPEN_WEIGHT_MODELS[0];
 
 export function getConfiguredModel(requested?: string): string {
-  const configured = requested || (getPref("llmModel") as string);
+  const saved = requested || (getPref("llmModel") as string);
+  const configured = saved?.startsWith("deepseek-")
+    ? `deepseek/${saved}`
+    : saved;
   return (OPEN_WEIGHT_MODELS as readonly string[]).includes(configured)
     ? configured
     : DEFAULT_LLM_MODEL;
@@ -139,7 +142,7 @@ export async function callOpenRouter(
   const url = getChatCompletionsUrl(provider);
   const providerConfig = getProviderConfig(provider);
   const payload = {
-    model,
+    model: provider === "cail" ? model.replace(/^deepseek\//, "") : model,
     messages,
     temperature,
     response_format: { type: "json_object" },

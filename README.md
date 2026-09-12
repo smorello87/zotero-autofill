@@ -58,10 +58,12 @@ Remove the selected provider’s key to stop AI requests and continue using cata
 
 The model menu is limited to DeepSeek’s downloadable-weight models:
 
-- **DeepSeek V4 Flash** (`deepseek/deepseek-v4-flash`) is the lower-cost default.
+CAIL Gateway requests use prefix-free IDs (`deepseek-v4.1-flash` and `deepseek-v4-pro`); OpenRouter requests retain the `deepseek/` prefix. Saved V4 Flash selections resolve to V4.1 Flash.
+
+- **DeepSeek V4.1 Flash** (`deepseek/deepseek-v4.1-flash`) is the lower-cost default.
 - **DeepSeek V4 Pro** (`deepseek/deepseek-v4-pro`) is the higher-quality alternative.
 
-The IDs and OpenRouter availability were checked on September 7, 2026. Both support the JSON responses required by the plugin. OpenRouter prices and availability can change, so check its model page before a large import. Any older saved model preference automatically falls back to DeepSeek V4 Flash.
+The IDs and OpenRouter availability were checked on September 7, 2026. Both support the JSON responses required by the plugin. OpenRouter prices and availability can change, so check its model page before a large import. Any older saved model preference automatically falls back to DeepSeek V4.1 Flash.
 
 ## Development and verification
 

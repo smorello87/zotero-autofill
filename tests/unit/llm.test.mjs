@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { loadModule } from "./helpers.mjs";
 
 let response;
-let selectedModel = "deepseek/deepseek-v4-flash";
+let selectedModel = "deepseek/deepseek-v4.1-flash";
 let selectedProvider = "cail";
 let openrouterKey = "";
 let cailKey = "cail-test-key";
@@ -56,10 +56,36 @@ test("missing CUNY key returns an actionable error", async () => {
   cailKey = "cail-test-key";
 });
 
+test("model IDs follow the selected provider for both models and saved ID formats", async () => {
+  response = { ok: true };
+  try {
+    for (const provider of ["cail", "openrouter"]) {
+      selectedProvider = provider;
+      openrouterKey = "test-key";
+      for (const slug of ["deepseek-v4.1-flash", "deepseek-v4-pro"]) {
+        for (const saved of [slug, `deepseek/${slug}`]) {
+          selectedModel = saved;
+          await llm.callOpenRouter([]);
+          assert.equal(
+            JSON.parse(lastRequest[2].body).model,
+            provider === "cail" ? slug : `deepseek/${slug}`,
+          );
+        }
+      }
+    }
+    selectedModel = "deepseek/deepseek-v4-flash";
+    assert.equal(llm.getConfiguredModel(), "deepseek/deepseek-v4.1-flash");
+  } finally {
+    selectedProvider = "cail";
+    selectedModel = "deepseek/deepseek-v4.1-flash";
+    openrouterKey = "";
+  }
+});
+
 test("a legacy proprietary preference falls back to the open-weight default", () => {
   selectedModel = "openai/gpt-4o-mini";
-  assert.equal(llm.getConfiguredModel(), "deepseek/deepseek-v4-flash");
-  selectedModel = "deepseek/deepseek-v4-flash";
+  assert.equal(llm.getConfiguredModel(), "deepseek/deepseek-v4.1-flash");
+  selectedModel = "deepseek/deepseek-v4.1-flash";
 });
 
 test("disambiguation rejects invalid indexes and confidence without selecting first", async () => {
